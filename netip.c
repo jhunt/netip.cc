@@ -99,8 +99,17 @@ extract_name(msg_t *h, char **rest)
 		}
 
 		l = h->dgram[i];
+		if (l > h->dlen) {
+			/* Whoa, that's some major corruption */
+			return NULL;
+		}
 		n += l + 1;
 		i += l + 1;
+	}
+
+	if (n == 0) {
+		/* don't support zero-length QNAMEs... */
+		return NULL;
 	}
 
 	debugf("name should be %li octets long\n", n);
@@ -223,6 +232,12 @@ listen_on(int port)
 	return fd;
 }
 
+#ifdef FUZZ
+#  define NEXT return 1
+#else
+#  define NEXT continue
+#endif
+
 int main(int argc, char **argv)
 {
 	int fd;
@@ -234,19 +249,24 @@ int main(int argc, char **argv)
 	uint16_t qtype, qclass, v;
 	ipv4_t ip;
 
+#ifdef FUZZ
+	fd = fileno(stdin);
+#else
 	fd = listen_on(53);
 	if (fd < 0) {
 		return 1;
 	}
+#endif
 
 	for (;;) {
+#ifndef FUZZ
 		len = sizeof(peer);
 		msg.dlen = recvfrom(fd, msg.dgram, DGRAM_MAX_SIZE,
 			MSG_WAITALL, (struct sockaddr*)&peer, &len);
 		if (msg.dlen < 0) {
 			errorf("failed to recvfrom() client: %s (error %d)\n",
 				strerror(errno), errno);
-			continue;
+			NEXT;
 		}
 
 		if (inet_ntop(AF_INET, &peer.sin_addr.s_addr, peer_ip, INET6_ADDRSTRLEN)) {
@@ -255,12 +275,20 @@ int main(int argc, char **argv)
 			errorf("received query from unknown client (%s, error %d)\n",
 				strerror(errno), errno);
 		}
+#else
+		msg.dlen = read(fd, msg.dgram, DGRAM_MAX_SIZE);
+		if (msg.dlen < 0) {
+			errorf("failed to read from fd %d: %s (error %d)\n",
+				fd, strerror(errno), errno);
+			NEXT;
+		}
+#endif
 
 		hexdump(stderr, msg.dgram, msg.dlen);
 
 		if (msg.dlen < DGRAM_HEADER_SIZE) {
 			debugf("short packet of %li octets received; ignoring\n", msg.dlen);
-			continue;
+			NEXT;
 		}
 		msg.dend = &msg.dgram[0] + msg.dlen;
 		memcpy(&msg, msg.dgram, DGRAM_HEADER_SIZE);
@@ -281,6 +309,11 @@ int main(int argc, char **argv)
 		}
 
 		name = extract_name(&msg, &rest);
+		if (name == NULL) {
+			debugf("unable to extract QNAME; refusing\n");
+			reply(&msg, REPLY_REFUSED);
+			goto reply;
+		}
 		if (rest + 3 > msg.dend) {
 			debugf("malformed query packet; refusing\n");
 			reply(&msg, REPLY_REFUSED);
@@ -314,7 +347,7 @@ int main(int argc, char **argv)
 		if (DGRAM_MAX_SIZE - msg.dlen < 10) {
 			/* need at least 11 _more_ octets for the IN A response */
 			debugf("query is too large to respond to; ignoring\n");
-			continue;
+			NEXT;
 		}
 
 		memcpy(msg.dgram, &msg, DGRAM_HEADER_SIZE);
@@ -333,16 +366,20 @@ int main(int argc, char **argv)
 		hexdump(stderr, msg.dgram, msg.dlen);
 
 reply:
+#ifndef FUZZ
 		debugf("replying in %li bytes on fd %d\n", msg.dlen, fd);
 		n = sendto(fd, msg.dgram, msg.dlen, 0, (struct sockaddr*)&peer, len);
 		if (n < 0) {
 			debugf("failed sending response: %s (error %d)\n",
 				strerror(errno), errno);
-			continue;
+			NEXT;
 		}
 		if (n != msg.dlen) {
 			debugf("short write (only %li/%li bytes written)!\n", n, msg.dlen);
-			continue;
+			NEXT;
 		}
+#endif
+
+		NEXT;
 	}
 }

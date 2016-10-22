@@ -1,0 +1,11 @@
+#!/bin/bash
+
+if [[ -d fuzz/findings ]]; then
+  echo "Findings from a previous run found!"
+  echo "Remove them first (rm -r fuzz/findings)"
+  echo "before continuing..."
+  exit 1
+fi
+
+make fuzzy
+afl-fuzz -i fuzz/in -o fuzz/findings ./fuzzy
