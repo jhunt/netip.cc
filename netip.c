@@ -43,9 +43,9 @@ typedef struct {
 #define RA(h)      (((h).flags)&0x0080)
 #define RCODE(h)   (((h).flags)&0x000f)
 
-#define errorf(f,...) fprintf(stderr, f, __VA_ARGS__)
+#define errorf(...) fprintf(stderr, __VA_ARGS__)
 #ifdef NETIP_DEBUG
-#  define debugf(f,...) fprintf(stderr, f, __VA_ARGS__)
+#  define debugf(...) fprintf(stderr, __VA_ARGS__)
 #  define hexdump(io,b,l) ({\
 	size_t ____n; \
 	for (____n = 0; ____n < (l); ____n++) { \
@@ -68,7 +68,7 @@ typedef struct {
 		ntohs((m)->ns_count), ntohs((m)->ar_count)); \
 })
 #else
-#  define debugf(f,...)
+#  define debugf(...)
 #  define hexdump(io,b,l)
 #  define pktdump(io,m)
 #endif
