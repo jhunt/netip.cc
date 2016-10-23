@@ -319,11 +319,17 @@ int main(int argc, char **argv)
 
 	char *host, *domain;
 	int port;
+#ifdef TESTER
+	int test_max = 0;
+#endif
 
 	struct option long_opts[] = {
 		{ "help",       no_argument, 0, 'h' },
 		{ "bind", required_argument, 0, 'b' },
 		{ "name", required_argument, 0, 'n' },
+#ifdef TESTER
+		{ "max",  required_argument, 0, 257 },
+#endif
 		{ 0, 0, 0, 0 },
 	};
 
@@ -340,6 +346,18 @@ int main(int argc, char **argv)
 		case 'h':
 			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
 			       "Copyright (C) James Hunt <james@niftylogic.com>\n"
+#ifdef TESTER
+			       "\n"
+			       "WARNING - this build of netip was made for testing purposes,\n"
+			       "          so it may not be as performant as you would like,\n"
+			       "          and it just might feature interesting short-circuit\n"
+			       "          functionality not suitable for production use.\n"
+#endif
+#ifdef FUZZ
+			       "\n"
+			       "WARNING - this build of netip was made for afl-fuzz testing,\n"
+			       "          so it may not be as performant as you would like.\n"
+#endif
 			       "\n"
 			       "USAGE: %s [-b host:port] [-n base.tld]\n"
 			       "\n"
@@ -350,6 +368,10 @@ int main(int argc, char **argv)
 			       "                (defaults to 127.0.0.1:53)\n"
 			       "  -n, --name    Toplevel domain to resolve for\n"
 			       "                (defaults to netip.cc)\n"
+#ifdef TESTER
+			       "  --max N       Maximum number of queries to field before\n"
+			       "                exiting (for TESTING PURPOSES only)\n"
+#endif
 			       "\n"
 			       "netip does not daemonize; if you want to run it in the\n"
 			       "background, you will need to arrange something yourself.\n"
@@ -371,6 +393,13 @@ int main(int argc, char **argv)
 		case 'n':
 			free(domain);
 			domain = strdup(optarg);
+			break;
+
+#ifdef TESTER
+		case 257: /* --max */
+			test_max = atoi(optarg);
+			break;
+#endif
 		}
 	}
 	rc = install_signal_handlers();
@@ -389,7 +418,11 @@ int main(int argc, char **argv)
 	}
 #endif
 
+#ifdef TESTER
+	while (test_max-- > 0) {
+#else
 	for (;;) {
+#endif
 #ifndef FUZZ
 		len = sizeof(peer);
 		debugf("waiting to receive up to %d bytes on fd %d\n", DGRAM_MAX_SIZE, fd);
