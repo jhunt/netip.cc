@@ -10,7 +10,7 @@
 #include <arpa/inet.h>
 #include <getopt.h>
 
-#define VERSION "1.0"
+#define VERSION "1.1"
 
 #define MICROSECONDS 1000000
 
@@ -338,6 +338,7 @@ int main(int argc, char **argv)
 
 	struct option long_opts[] = {
 		{ "help",       no_argument, 0, 'h' },
+		{ "version",    no_argument, 0, 'v' },
 		{ "bind", required_argument, 0, 'b' },
 		{ "name", required_argument, 0, 'n' },
 #ifdef TESTER
@@ -351,14 +352,14 @@ int main(int argc, char **argv)
 	host = strdup("127.0.0.1");
 	port = 53;
 	for (;;) {
-		int c = getopt_long(argc, argv, "hb:n:", long_opts, NULL);
+		int c = getopt_long(argc, argv, "hvb:n:", long_opts, NULL);
 		if (c == -1) break;
 
 		switch (c) {
 		case '?':
 		case 'h':
 			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
-			       "Copyright (C) James Hunt <james@niftylogic.com>\n"
+			       "Copyright (c) James Hunt <james@niftylogic.com>\n"
 #ifdef TESTER
 			       "\n"
 			       "WARNING - this build of netip was made for testing purposes,\n"
@@ -376,14 +377,15 @@ int main(int argc, char **argv)
 			       "\n"
 			       "OPTIONS:\n"
 			       "\n"
-			       "  -h, --help    Show the help screen\n"
-			       "  -b, --bind    Host IP address and port to bind (UDP)\n"
-			       "                (defaults to 127.0.0.1:53)\n"
-			       "  -n, --name    Toplevel domain to resolve for\n"
-			       "                (defaults to netip.cc)\n"
+			       "  -h, --help     Show the help screen\n"
+			       "  -v, --version  Show version information\n"
+			       "  -b, --bind     Host IP address and port to bind (UDP)\n"
+			       "                 (defaults to 127.0.0.1:53)\n"
+			       "  -n, --name     Toplevel domain to resolve for\n"
+			       "                 (defaults to netip.cc)\n"
 #ifdef TESTER
-			       "  --max N       Maximum number of queries to field before\n"
-			       "                exiting (for TESTING PURPOSES only)\n"
+			       "  --max N        Maximum number of queries to field before\n"
+			       "                 exiting (for TESTING PURPOSES only)\n"
 #endif
 			       "\n"
 			       "netip does not daemonize; if you want to run it in the\n"
@@ -392,6 +394,11 @@ int main(int argc, char **argv)
 			       "Error and warning messages will be printed to standard\n"
 			       "error; statistics will go to standard output.\n"
 			       "\n", argv[0]);
+			return 0;
+
+		case 'v':
+			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
+			       "Copyright (c) James Hunt <james@niftylogic.com>\n");
 			return 0;
 
 		case 'b':
