@@ -533,6 +533,7 @@ int main(int argc, char **argv)
 		hexdump(stderr, msg.dgram, msg.dlen);
 
 reply:
+		free(name); name = NULL;
 #ifndef FUZZ
 		debugf("replying in %li bytes on fd %d\n", msg.dlen, fd);
 		n = sendto(fd, msg.dgram, msg.dlen, 0, (struct sockaddr*)&peer, len);
@@ -551,6 +552,8 @@ reply:
 		NEXT;
 	}
 
+	free(domain);
+	free(host);
 	close(fd);
 	return 0;
 }

@@ -1,0 +1,28 @@
+#!/bin/bash
+
+NETIP_HOST=127.0.0.1
+NETIP_PORT=5653
+RC=0
+
+check() {
+  local name=$1
+  local want=$2
+
+  got=$(dig -p ${NETIP_PORT} +short ${name} @${NETIP_HOST})
+  if [[ $got != $want ]]; then
+    echo "FAIL - $name did not resolve to $want (got '$got')"
+    RC=1
+  else
+    echo "ok $name -> $want"
+  fi
+}
+
+make tester
+valgrind --leak-check=full \
+  ./tester -b "${NETIP_HOST}:${NETIP_PORT}" --max 1000 &
+NETIP_PID=$!
+
+pwgen 8 1000 | xargs -n1 -P100 -I/ dig +short @${NETIP_HOST} -p${NETIP_PORT} /.127.86.86.86.netip.cc >/dev/null
+
+wait $NETIP_PID
+exit $RC
