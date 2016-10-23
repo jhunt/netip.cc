@@ -283,7 +283,7 @@ install_signal_handlers()
 	struct sigaction sa, old;
 	int rc;
 
-	sa.sa_flags = 0; /* specifically, clear SA_RESTART */
+	memset(&sa, 0, sizeof(sa)); /* specifically, clear SA_RESTART */
 	sa.sa_handler = trigger_shutdown;
 
 	rc = sigaction(SIGTERM, &sa, &old);
