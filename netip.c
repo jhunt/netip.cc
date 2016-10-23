@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 #include <arpa/inet.h>
 
 #define DGRAM_MAX_SIZE    512
@@ -232,6 +233,30 @@ listen_on(int port)
 	return fd;
 }
 
+static int DO_SHUTDOWN = 0;
+void trigger_shutdown(int sig)
+{
+	DO_SHUTDOWN = 1;
+}
+
+static int
+install_signal_handlers()
+{
+	struct sigaction sa, old;
+	int rc;
+
+	sa.sa_flags = 0; /* specifically, clear SA_RESTART */
+	sa.sa_handler = trigger_shutdown;
+
+	rc = sigaction(SIGTERM, &sa, &old);
+	if (rc != 0) return -1;
+
+	rc = sigaction(SIGINT, &sa, &old);
+	if (rc != 0) return -1;
+
+	return 0;
+}
+
 #ifdef FUZZ
 #  define NEXT return 1
 #else
@@ -240,6 +265,8 @@ listen_on(int port)
 
 int main(int argc, char **argv)
 {
+	int rc;
+
 	int fd;
 	struct sockaddr_in peer;
 	socklen_t len;
@@ -248,6 +275,13 @@ int main(int argc, char **argv)
 	char *name, *rest, peer_ip[INET6_ADDRSTRLEN];
 	uint16_t qtype, qclass, v;
 	ipv4_t ip;
+
+	rc = install_signal_handlers();
+	if (rc != 0) {
+		errorf("failed to install signal handlers: %s (error %d)\n",
+			strerror(errno), errno);
+		return 1;
+	}
 
 #ifdef FUZZ
 	fd = fileno(stdin);
@@ -261,9 +295,11 @@ int main(int argc, char **argv)
 	for (;;) {
 #ifndef FUZZ
 		len = sizeof(peer);
+		debugf("waiting to receive up to %d bytes on fd %d\n", DGRAM_MAX_SIZE, fd);
 		msg.dlen = recvfrom(fd, msg.dgram, DGRAM_MAX_SIZE,
 			MSG_WAITALL, (struct sockaddr*)&peer, &len);
 		if (msg.dlen < 0) {
+			if (DO_SHUTDOWN) break;
 			errorf("failed to recvfrom() client: %s (error %d)\n",
 				strerror(errno), errno);
 			NEXT;
@@ -278,6 +314,7 @@ int main(int argc, char **argv)
 #else
 		msg.dlen = read(fd, msg.dgram, DGRAM_MAX_SIZE);
 		if (msg.dlen < 0) {
+			if (DO_SHUTDOWN) break;
 			errorf("failed to read from fd %d: %s (error %d)\n",
 				fd, strerror(errno), errno);
 			NEXT;
@@ -370,6 +407,7 @@ reply:
 		debugf("replying in %li bytes on fd %d\n", msg.dlen, fd);
 		n = sendto(fd, msg.dgram, msg.dlen, 0, (struct sockaddr*)&peer, len);
 		if (n < 0) {
+			if (DO_SHUTDOWN) break;
 			debugf("failed sending response: %s (error %d)\n",
 				strerror(errno), errno);
 			NEXT;
@@ -382,4 +420,7 @@ reply:
 
 		NEXT;
 	}
+
+	close(fd);
+	return 0;
 }
