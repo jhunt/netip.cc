@@ -6,10 +6,13 @@
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <getopt.h>
 
 #define VERSION "1.0"
+
+#define MICROSECONDS 1000000
 
 #define DGRAM_MAX_SIZE    512
 #define DGRAM_HEADER_SIZE 12
@@ -154,18 +157,19 @@ ipv4quad(const char *s)
 }
 
 static ipv4_t
-extract_ip(char *name, const char *base)
+extract_ip(const char *_name, const char *base)
 {
 	size_t namelen, baselen, n;
-	char *a, *b;
+	char *a, *b, *name;
 	union {
 		uint8_t q[4];
 		ipv4_t  v;
 	} ip;
 	int quad;
 
-	namelen = strlen((const char *)name);
-	baselen = strlen((const char *)base);
+	name = strdup(_name);
+	namelen = strlen(name);
+	baselen = strlen(base);
 	if (namelen < baselen) {
 		/* `name' is too short to end with `base' */
 		return 0;
@@ -250,6 +254,8 @@ parseaddr(const char *addr, char **host, int *port)
 	char *p, *end;
 	long _port;
 
+	errno = EINVAL;
+
 	*host = strdup(addr);
 	p = strchr(*host, ':');
 	if (!p) {
@@ -268,6 +274,11 @@ parseaddr(const char *addr, char **host, int *port)
 		return -1;
 	}
 	*port = _port;
+
+	if (!**host) {
+		free(*host);
+		*host = strdup("127.0.0.1");
+	}
 	return 0;
 }
 
@@ -322,6 +333,8 @@ int main(int argc, char **argv)
 #ifdef TESTER
 	int test_max = 0;
 #endif
+
+	struct timeval start, end;
 
 	struct option long_opts[] = {
 		{ "help",       no_argument, 0, 'h' },
@@ -412,6 +425,7 @@ int main(int argc, char **argv)
 #ifdef FUZZ
 	fd = fileno(stdin);
 #else
+	debugf("binding %s:%d\n", host, port);
 	fd = listen_on(host, port);
 	if (fd < 0) {
 		return 1;
@@ -433,6 +447,13 @@ int main(int argc, char **argv)
 			errorf("failed to recvfrom() client: %s (error %d)\n",
 				strerror(errno), errno);
 			NEXT;
+		}
+
+		rc = gettimeofday(&start, NULL);
+		if (rc != 0) {
+			errorf("unexpected error encountered during gettimeofday(start): %s (error %d)\n",
+				strerror(errno), errno);
+			memset(&start, 0, sizeof(start));
 		}
 
 		if (inet_ntop(AF_INET, &peer.sin_addr.s_addr, peer_ip, INET6_ADDRSTRLEN)) {
@@ -533,7 +554,6 @@ int main(int argc, char **argv)
 		hexdump(stderr, msg.dgram, msg.dlen);
 
 reply:
-		free(name); name = NULL;
 #ifndef FUZZ
 		debugf("replying in %li bytes on fd %d\n", msg.dlen, fd);
 		n = sendto(fd, msg.dgram, msg.dlen, 0, (struct sockaddr*)&peer, len);
@@ -547,7 +567,28 @@ reply:
 			debugf("short write (only %li/%li bytes written)!\n", n, msg.dlen);
 			NEXT;
 		}
+
+		rc = gettimeofday(&end, NULL);
+		if (rc != 0) {
+			errorf("unexpected error encountered during gettimeofday(start): %s (error %d)\n",
+				strerror(errno), errno);
+
+		} else if (start.tv_sec != 0) {
+			unsigned long ts;
+
+			if (end.tv_usec < start.tv_usec) {
+				end.tv_usec += MICROSECONDS;
+				end.tv_sec--;
+			}
+
+			ts = (end.tv_sec  - start.tv_sec) * MICROSECONDS
+			   + (end.tv_usec - start.tv_usec);
+
+			msg.flags = ntohs(msg.flags);
+			printf("query %02x %s %s %lu (ms)\n", RCODE(msg), (RCODE(msg) ? "invalid" : "valid"), name, ts);
+		}
 #endif
+		free(name); name = NULL;
 
 		NEXT;
 	}
