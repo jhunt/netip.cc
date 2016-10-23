@@ -1,0 +1,82 @@
+<html>
+<head>
+<title>netip.cc</title>
+<style type="text/css">
+html, body {
+  background-color: #111;
+  color: #090;
+  font-family: Courier New, Courier, monospace;
+  font-size: 14px;
+  line-height: 16px;
+  font-weight: bold;
+}
+* { font-family: inherit; }
+body { margin: 2em auto; }
+body { width: 35em; }
+pre  { width: 30em; }
+header { white-space: pre; }
+p, pre {
+  line-height: 1.3em;
+  margin: 0 auto 2em auto;
+}
+pre { white-space: pre; }
+a, b { color: #0f0; }
+a { text-decoration: none; }
+h1 {
+  font-size: inherit;
+  font-variant: bold;
+  overflow: hidden;
+  white-space: pre;
+  color: #0f0;
+  margin: 2em 0 0 0;
+}
+p.copyright { color: #050; }
+</style>
+</head>
+<body>
+<header>
+                _
+            _  (_)
+ _ __   ___| |_ _ _ __   ___ ___ 
+| '_ \ / _ \ __| | '_ \ / __/ __|
+| | | |  __/ |_| | |_) | (_| (__ 
+|_| |_|\___|\__|_| .__(_)___\___|
+                 |_|
+</header>
+<h1>fast, reliable wildcard dns</h1>
+<p>When a *.netip.cc domain is resolved, the
+embedded IP address is returned as the corresponding A record:</p>
+<pre>                        <b>10.20.30.40</b>.netip.cc
+             api.system.<b>10.20.30.40</b>.netip.cc
+a.b.c.d.e.f.g.h.i.j.k.l.<b>10.20.30.40</b>.netip.cc</pre>
+<p>To use it, just make up a name! When you need a DNS entry, use
+<b>name.$IP.netip.cc</b>.  You can also run your own netip
+resolver, on your own servers, using your own base domain.</p>
+<p>You can download the netip resolver:</p>
+<ul>
+  <li>For <a accesskey="l" href="https://github.com/jhunt/netip.cc/releases/download/v1.0/netip-linux-64">[L]inux 64-bit</a></li>
+  <li>For <a accesskey="m" href="https://github.com/jhunt/netip.cc/releases/download/v1.0/netip-darwin-64">[M]ac OS X 64-bit</a></li>
+  <li>or, just get the <a accesskey="s" href="https://github.com/jhunt/netip.cc">[S]ource Code</a></li>
+</ul>
+<p>Usage is straightforward:</p>
+<pre>$ ./netip -n <b>your.base.tld</b> -b <b>ip.ad.dr.ess</b>:53 &amp;</pre>
+<p class="copyright">copyright &copy; 2016 James Hunt</p>
+<script type="text/javascript">
+(function () {
+  var keys = {};
+  var l = document.getElementsByTagName('a');
+  for (var i = 0; i < l.length; i++) {
+    var key = l[i].getAttribute('accesskey');
+    if (typeof(key) !== "undefined") {
+      keys[key] = l[i];
+    }
+  }
+  document.body.onkeyup = function (event) {
+    if (!event.isComposing && !event.repeat && typeof(keys[event.key]) !== "undefined") {
+      keys[event.key].dispatchEvent(new MouseEvent('click', { 'view': window, 'bubbles': true, 'cancelable': true }));
+    }
+  };
+})();
+</script>
+</body>
+</html>
