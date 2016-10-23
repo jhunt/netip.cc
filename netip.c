@@ -317,6 +317,13 @@ aa_reply(msg_t *m, uint32_t ttl, ipv4_t ip)
 	m->an_count = htons(1);
 	m->ns_count = 0;
 	m->ar_count = 0;
+	/* reposition dlen to truncate Additional Records, if present */
+	for (m->dlen = DGRAM_HEADER_SIZE; m->dgram[m->dlen] != 0; m->dlen++)
+		;
+	m->dlen++;
+	m->dlen += sizeof(v);
+	m->dlen += sizeof(v);
+
 	if (m->dlen + sizeof(ttl) + sizeof(v) + sizeof(ip) > DGRAM_MAX_SIZE) {
 		debugf("query is too large to respond to; ignoring\n");
 		return -1;
@@ -551,8 +558,7 @@ int main(int argc, char **argv)
 
 		pktdump(stderr, &msg);
 
-		if (QR(msg) || AA(msg) || TC(msg) || RA(msg) || OPCODE(msg)
-		 || msg.an_count || msg.ns_count || msg.ar_count) {
+		if (QR(msg) || AA(msg) || TC(msg) || RA(msg) || OPCODE(msg)) {
 			debugf("malformed query packet; refusing\n");
 			reply(&msg, REPLY_REFUSED);
 			goto reply;
