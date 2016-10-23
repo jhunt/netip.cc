@@ -145,6 +145,31 @@ extract_name(msg_t *h, char **rest)
 }
 
 static int
+is_ns(const char *name, const char *base)
+{
+	size_t namelen, baselen, n;
+
+	namelen = strlen(name);
+	baselen = strlen(base);
+	if (namelen == baselen + 4
+	 && name[0] == 'n' && name[1] == 's' && isdigit(name[2]) && name[3] == '.'
+	 && memcmp(name + namelen - baselen, base, baselen) == 0) {
+		return 1;
+	}
+	return 0;
+}
+
+static ipv4_t
+convertip(const char *ip)
+{
+	struct sockaddr_in ipv4;
+	if (inet_pton(AF_INET, ip, &ipv4.sin_addr.s_addr) != 1) {
+		return 0;
+	}
+	return ntohl(ipv4.sin_addr.s_addr);
+}
+
+static int
 ipv4quad(const char *s)
 {
 	long q;
@@ -279,6 +304,41 @@ parseaddr(const char *addr, char **host, int *port)
 		free(*host);
 		*host = strdup("127.0.0.1");
 	}
+	return 0;
+}
+
+static int
+aa_reply(msg_t *m, uint32_t ttl, ipv4_t ip)
+{
+	uint16_t v;
+
+	m->flags = htons(F_REPLY | F_AA);
+	m->qd_count = 0;
+	m->an_count = htons(1);
+	m->ns_count = 0;
+	m->ar_count = 0;
+	if (m->dlen + sizeof(ttl) + sizeof(v) + sizeof(ip) > DGRAM_MAX_SIZE) {
+		debugf("query is too large to respond to; ignoring\n");
+		return -1;
+	}
+
+	memcpy(m->dgram, m, DGRAM_HEADER_SIZE);
+
+	/* TTL */
+	ttl = htonl(ttl);
+	memcpy(m->dgram + m->dlen, &ttl, sizeof(ttl));
+	m->dlen += sizeof(ttl);
+
+	/* RDLENGTH */
+	v = htons(sizeof(ip));
+	memcpy(m->dgram + m->dlen, &v, sizeof(v));
+	m->dlen += sizeof(v);
+
+	/* RDATA */
+	ip = htonl(ip);
+	memcpy(m->dgram + m->dlen, &ip, sizeof(ip));
+	m->dlen += sizeof(ip);
+
 	return 0;
 }
 
@@ -523,41 +583,31 @@ int main(int argc, char **argv)
 		}
 
 		debugf("looking up '%s'\n", name);
-		/* extract the IP given the basename ".netip.cc" */
-		ip = extract_ip(name, domain);
-		if (ip == 0 || ip == 0xffffffff) {
-			debugf("invalid domain %s; replying NXDOMAIN\n", name);
-			reply(&msg, REPLY_NXDOMAIN);
-			goto reply;
+		if (is_ns(name, domain)) {
+			ip = convertip(host);
+			if (ip == 0) {
+				debugf("failed to convert %s into an IP (somehow); replying NXDOMAIN", host);
+				reply(&msg, REPLY_NXDOMAIN);
+				goto reply;
+			}
+			debugf("ns ip: %04x\n", ip);
+
+		} else {
+			/* extract the IP given the basename ".netip.cc" */
+			ip = extract_ip(name, domain);
+			if (ip == 0 || ip == 0xffffffff) {
+				debugf("invalid domain %s; replying NXDOMAIN\n", name);
+				reply(&msg, REPLY_NXDOMAIN);
+				goto reply;
+			}
+			debugf("ip: %04x\n", ip);
 		}
-		debugf("ip: %04x\n", ip);
 
 		/* respond */
-		msg.flags = htons(0x8000   /* QR = 1 */
-		                | 0x0400); /* AA = 1 */
-		msg.qd_count = 0;
-		msg.an_count = htons(1);
-		msg.ns_count = 0;
-		msg.ar_count = 0;
-		if (DGRAM_MAX_SIZE - msg.dlen < 10) {
-			/* need at least 11 _more_ octets for the IN A response */
-			debugf("query is too large to respond to; ignoring\n");
+		rc = aa_reply(&msg, 0, ip);
+		if (rc != 0) {
 			NEXT;
 		}
-
-		memcpy(msg.dgram, &msg, DGRAM_HEADER_SIZE);
-
-		memset(msg.dgram + msg.dlen, 0, 4);            /* TTL       0     */
-		msg.dlen += 4;
-
-		v = htons(sizeof(ip)); /* length of an IPv4 32-bit address */
-		memcpy(msg.dgram + msg.dlen, &v, sizeof(v));   /* RDLENGTH  4     */
-		msg.dlen += sizeof(v);
-
-		ip = htonl(ip);
-		memcpy(msg.dgram + msg.dlen, &ip, sizeof(ip)); /* RDATA     (ip)  */
-		msg.dlen += sizeof(ip);
-
 		hexdump(stderr, msg.dgram, msg.dlen);
 
 reply:
