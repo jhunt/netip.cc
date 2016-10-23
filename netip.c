@@ -7,6 +7,9 @@
 #include <unistd.h>
 #include <signal.h>
 #include <arpa/inet.h>
+#include <getopt.h>
+
+#define VERSION "1.0"
 
 #define DGRAM_MAX_SIZE    512
 #define DGRAM_HEADER_SIZE 12
@@ -200,7 +203,7 @@ extract_ip(char *name, const char *base)
 }
 
 static int
-listen_on(int port)
+listen_on(const char *host, int port)
 {
 	int rc, fd, val;
 	struct sockaddr_in ipv4;
@@ -220,17 +223,52 @@ listen_on(int port)
 		/* no point in failing; just keep going */
 	}
 
-	ipv4.sin_family       = AF_INET;
-	ipv4.sin_port         = htons(53);
-	ipv4.sin_addr.s_addr  = htonl((127 << 24) | 1);
+	ipv4.sin_family = AF_INET;
+	ipv4.sin_port   = htons(port);
+	rc = inet_pton(ipv4.sin_family, host, &ipv4.sin_addr);
+	if (rc != 1) {
+		errorf("unable to parse bind address %s:%d: %s (error %d)\n",
+			host, port, strerror(errno), errno);
+		close(fd);
+		return -1;
+	}
+
 	rc = bind(fd, (struct sockaddr*)&ipv4, sizeof(ipv4));
 	if (rc != 0) {
 		errorf("unable to bind listening socket: %s (error %d)\n",
 			strerror(errno), errno);
+		close(fd);
 		return -1;
 	}
 
 	return fd;
+}
+
+static int
+parseaddr(const char *addr, char **host, int *port)
+{
+	char *p, *end;
+	long _port;
+
+	*host = strdup(addr);
+	p = strchr(*host, ':');
+	if (!p) {
+		*port = 53;
+		return 0;
+	}
+
+	*p++ = '\0';
+	if (!p) {
+		/* invalid 'host:' format (no port, colon present) */
+		return -1;
+	}
+
+	_port = strtol(p, &end, 10);
+	if ((end && *end) || _port < 1 || _port > 65535) {
+		return -1;
+	}
+	*port = _port;
+	return 0;
 }
 
 static int DO_SHUTDOWN = 0;
@@ -270,12 +308,71 @@ int main(int argc, char **argv)
 	int fd;
 	struct sockaddr_in peer;
 	socklen_t len;
+	char peer_ip[INET6_ADDRSTRLEN];
+
 	ssize_t n;
 	msg_t msg;
-	char *name, *rest, peer_ip[INET6_ADDRSTRLEN];
+
+	char *name, *rest;
 	uint16_t qtype, qclass, v;
 	ipv4_t ip;
 
+	char *host, *domain;
+	int port;
+
+	struct option long_opts[] = {
+		{ "help",       no_argument, 0, 'h' },
+		{ "bind", required_argument, 0, 'b' },
+		{ "name", required_argument, 0, 'n' },
+		{ 0, 0, 0, 0 },
+	};
+
+	/* parse options */
+	domain = strdup("netip.cc");
+	host = strdup("127.0.0.1");
+	port = 53;
+	for (;;) {
+		int c = getopt_long(argc, argv, "hb:n:", long_opts, NULL);
+		if (c == -1) break;
+
+		switch (c) {
+		case '?':
+		case 'h':
+			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
+			       "Copyright (C) James Hunt <james@niftylogic.com>\n"
+			       "\n"
+			       "USAGE: %s [-b host:port] [-n base.tld]\n"
+			       "\n"
+			       "OPTIONS:\n"
+			       "\n"
+			       "  -h, --help    Show the help screen\n"
+			       "  -b, --bind    Host IP address and port to bind (UDP)\n"
+			       "                (defaults to 127.0.0.1:53)\n"
+			       "  -n, --name    Toplevel domain to resolve for\n"
+			       "                (defaults to netip.cc)\n"
+			       "\n"
+			       "netip does not daemonize; if you want to run it in the\n"
+			       "background, you will need to arrange something yourself.\n"
+			       "\n"
+			       "Error and warning messages will be printed to standard\n"
+			       "error; statistics will go to standard output.\n"
+			       "\n", argv[0]);
+			return 0;
+
+		case 'b':
+			free(host);
+			rc = parseaddr(optarg, &host, &port);
+			if (rc != 0) {
+				errorf("invalid --bind address '%s'\n", optarg);
+				return 1;
+			}
+			break;
+
+		case 'n':
+			free(domain);
+			domain = strdup(optarg);
+		}
+	}
 	rc = install_signal_handlers();
 	if (rc != 0) {
 		errorf("failed to install signal handlers: %s (error %d)\n",
@@ -286,7 +383,7 @@ int main(int argc, char **argv)
 #ifdef FUZZ
 	fd = fileno(stdin);
 #else
-	fd = listen_on(53);
+	fd = listen_on(host, port);
 	if (fd < 0) {
 		return 1;
 	}
@@ -366,7 +463,7 @@ int main(int argc, char **argv)
 
 		debugf("looking up '%s'\n", name);
 		/* extract the IP given the basename ".netip.cc" */
-		ip = extract_ip(name, "netip.cc");
+		ip = extract_ip(name, domain);
 		if (ip == 0 || ip == 0xffffffff) {
 			debugf("invalid domain %s; replying NXDOMAIN\n", name);
 			reply(&msg, REPLY_NXDOMAIN);
