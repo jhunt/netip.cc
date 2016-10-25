@@ -40,6 +40,8 @@
 
 #define Q(c,t) (((c) << 8) | (t))
 
+#define OFFSET(c) ((unsigned char)(c))
+
 #define errorf(...) fprintf(stderr, __VA_ARGS__)
 #ifdef NETIP_DEBUG
 #  define debugf(...) fprintf(stderr, __VA_ARGS__)
@@ -76,8 +78,8 @@ static uint32_t TTL    = 300;
 typedef uint32_t ipv4_t;
 
 typedef struct {
-	size_t len;
-	char   data[];
+	ssize_t len;
+	char    data[];
 } name_t;
 
 static name_t* name_parse(const char *s);
@@ -132,11 +134,9 @@ name_extract(const char *b, size_t max)
 	name_t *name;
 
 	n = i = 0;
-	while (b[i]) {
-		debugf(". n=%li, i=%li, b[i]=%02x max=%li\n", n, i, b[i], max);
-		n += 1 + b[i];
-		i += 1 + b[i];
-		debugf(": n=%li, i=%li, b[i]=%02x max=%li\n", n, i, b[i], max);
+	while (i < max && b[i]) {
+		n += 1 + OFFSET(b[i]);
+		i += 1 + OFFSET(b[i]);
 		if (i > max)
 			return NULL;
 	}
@@ -153,20 +153,16 @@ name_extract(const char *b, size_t max)
 static char *
 name_string(name_t *name)
 {
-	size_t i, n;
+	size_t i;
 	char *s;
 
-	s = calloc(1, name->len - 1);
+	s = calloc(1, name->len);
 	if (!s)
 		return NULL;
 
 	memcpy(s, name->data + 1, name->len - 1);
-	for (n = i = 0; name->data[i]; i += name->data[i] + 1) {
-		n += name->data[i];
-		*(s + n) = '.';
-		n++;
-	}
-	*(s + name->len - 2) = '\0';
+	for (i = 0; i < name->len && OFFSET(name->data[i]); i += OFFSET(name->data[i]) + 1)
+		s[i] = '.';
 	return s;
 }
 
@@ -183,10 +179,10 @@ name_is(name_t *name, const char *label, name_t *domain)
 	ssize_t off;
 
 	off = name_search(name, domain);
-	if (off < 0                          /* name doesn't end in domain */
-	 || name->data[0] != strlen(label)   /* 1st label is too long      */
-	 || name->data[0] != off - 1         /* more than one prefix label */
-	 || memcmp(name->data + 1, label, name->data[0]) != 0)
+	if (off < 0                                  /* name doesn't end in domain */
+	 || OFFSET(name->data[0]) != strlen(label)   /* 1st label is too long      */
+	 || OFFSET(name->data[0]) != off - 1         /* more than one prefix label */
+	 || memcmp(name->data + 1, label, OFFSET(name->data[0])) != 0)
 		return 0;
 
 	return 1; /* true */
@@ -195,15 +191,16 @@ name_is(name_t *name, const char *label, name_t *domain)
 static ssize_t
 name_search(name_t *haystack, name_t *needle)
 {
-	size_t i, n;
+	size_t i;
+	ssize_t n;
 
 	i = 0;
 	n = haystack->len;
 	while (n >= needle->len) {
 		if (memcmp(haystack->data + i, needle->data, needle->len) == 0)
 			return i;
-		n -= haystack->data[i] + 1;
-		i += haystack->data[i] + 1;
+		n -= OFFSET(haystack->data[i]) + 1;
+		i += OFFSET(haystack->data[i]) + 1;
 	}
 	return -1;
 }
@@ -222,16 +219,16 @@ name_ip(name_t *query, name_t *tld)
 
 	a = i = n = 0;
 	while (i < end) {
-		i += query->data[i] + 1;
+		i += OFFSET(query->data[i]) + 1;
 		if (n++ >= 4) {
-			a += query->data[a] + 1;
+			a += OFFSET(query->data[a]) + 1;
 		}
 	}
 
 	ip = 0;
-	for (n = 0; n < 4 && query->data[a]; n++, a += query->data[a] + 1) {
+	for (n = 0; n < 4 && OFFSET(query->data[a]); n++, a += OFFSET(query->data[a]) + 1) {
 		octet = 0;
-		for (i = 0; i < query->data[a]; i++) {
+		for (i = 0; i < OFFSET(query->data[a]); i++) {
 			if (!isdigit(query->data[a + 1 + i]))
 				return BADIP;
 			octet = octet * 10 + query->data[a + 1 + i] - '0';
@@ -498,7 +495,7 @@ msg_prep_reply(msg_t *m, uint16_t f)
 	m->flags = htons(F_REPLY | f);
 	m->qd_count = htons(1);
 	m->an_count = m->ns_count = m->ar_count = 0;
-	for (m->len = DGRAM_HEADER_SIZE; m->data[m->len] != 0; m->len++)
+	for (m->len = DGRAM_HEADER_SIZE; OFFSET(m->data[m->len]) != 0; m->len++)
 		;
 	m->len += 5; /* 00 [qclass] [qtype] */
 }
