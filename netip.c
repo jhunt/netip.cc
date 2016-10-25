@@ -88,12 +88,6 @@ static ssize_t name_search(name_t *haystack, name_t *needle);
 static ipv4_t  name_ip(name_t *query, name_t *tld);
 
 typedef struct {
-	size_t len;
-	size_t mark;
-	char   data[DGRAM_MAX_SIZE];
-} buf_t;
-
-typedef struct {
 	/* header */
 	uint16_t id;
 	uint16_t flags;
