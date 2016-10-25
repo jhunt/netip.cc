@@ -2,41 +2,57 @@
 
 NETIP_HOST=127.0.0.1
 NETIP_PORT=5553
+NETIP_SERIAL=12345678
 RC=0
 
 check() {
-  local name=$1
-  local want=$2
+  local type=$1
+  local class=$2
+  local name=$3
+  local want=$4
 
-  got=$(dig -p ${NETIP_PORT} +short ${name} @${NETIP_HOST})
+  got=$(dig -p ${NETIP_PORT} +short ${type} ${class} ${name} @${NETIP_HOST})
   if [[ $got != $want ]]; then
-    echo "FAIL - $name did not resolve to $want (got '$got')"
+    echo "FAIL - $type $class $name did not resolve to $want (got '$got')"
     RC=1
-  else
-    echo "ok $name -> $want"
+  elif [[ -n $DEBUG ]]; then
+    echo "ok $type $class $name -> $want"
   fi
 }
 
-./netip -b "${NETIP_HOST}:${NETIP_PORT}" &
+./netip -b "${NETIP_HOST}:${NETIP_PORT}" -s ${NETIP_SERIAL} >/dev/null 2>&1 &
 NETIP_PID=$!
 
-check 10.20.30.40.netip.cc 10.20.30.40
-check a.10.20.30.40.netip.cc 10.20.30.40
-check a.b.c.d.e.f.g.h.i.j.k.l.m.10.20.30.40.netip.cc 10.20.30.40
-check api.system.10.244.0.34.netip.cc 10.244.0.34
+check IN A 10.20.30.40.netip.cc 10.20.30.40
+check IN A a.10.20.30.40.netip.cc 10.20.30.40
+check IN A a.b.c.d.e.f.g.h.i.j.k.l.m.10.20.30.40.netip.cc 10.20.30.40
+check IN A api.system.10.244.0.34.netip.cc 10.244.0.34
 
-for x in $(seq 0 9); do
-  check ns${x}.netip.cc $NETIP_HOST
-done
-check ns.netip.cc ''
-check ns10.netip.cc ''
+check IN A ns1.netip.cc  $NETIP_HOST
+check IN A ns2.netip.cc  $NETIP_HOST
+check IN A ns.netip.cc   ''
+check IN A ns0.netip.cc  ''
+check IN A ns3.netip.cc  ''
+check IN A ns10.netip.cc ''
 
-check yahoo.com ''
-check x.0.0.0.0.netip.cc ''
-check x.255.255.255.255.netip.cc ''
-check x.10.0.0.netip.cc '' # not enough octets
-check x.10.0.0.799.netip.cc '' # hollywood ip
+check IN A yahoo.com ''
+check IN A x.0.0.0.0.netip.cc ''
+check IN A x.255.255.255.255.netip.cc ''
+check IN A x.10.0.0.netip.cc '' # not enough octets
+check IN A x.10.0.0.799.netip.cc '' # hollywood ip
+
+check IN SOA netip.cc           "ns1.netip.cc. hostmaster.netip.cc. ${NETIP_SERIAL} 300 300 300 300"
+check IN SOA x.netip.cc         "ns1.netip.cc. hostmaster.netip.cc. ${NETIP_SERIAL} 300 300 300 300"
+check IN SOA any.thing.netip.cc "ns1.netip.cc. hostmaster.netip.cc. ${NETIP_SERIAL} 300 300 300 300"
+check IN SOA netip.cc.bad ''
+
+check IN NS netip.cc "$(echo ns1.netip.cc.
+                        echo ns2.netip.cc.)"
+check IN NS not.netip.cc.domain ''
 
 kill -TERM $NETIP_PID
 wait $NETIP_PID
+if [[ $RC == 0 ]]; then
+	echo "ALL TESTS PASS"
+fi
 exit $RC

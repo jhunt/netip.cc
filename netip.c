@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <time.h>
 
 #define VERSION "1.1"
 
@@ -25,29 +26,19 @@
 #define REPLY_REFUSED  (F_REPLY |        F_REFUSED)
 #define REPLY_NXDOMAIN (F_REPLY | F_AA | F_NXDOMAIN)
 
-typedef uint32_t ipv4_t;
+#define Q_IN     0x01
 
-typedef struct {
-	/* header */
-	uint16_t id;
-	uint16_t flags;
-	uint16_t qd_count;
-	uint16_t an_count;
-	uint16_t ns_count;
-	uint16_t ar_count;
+#define Q_A      0x01
+#define Q_NS     0x02
+#define Q_SOA    0x06
 
-	char     dgram[DGRAM_MAX_SIZE];
-	ssize_t  dlen;
-	char    *dend;
-} msg_t;
+#define Q_IN_A   0x0101
+#define Q_IN_NS  0x0102
+#define Q_IN_SOA 0x0106
 
-#define QR(h)      (((h).flags)&0x8000)
-#define OPCODE(h) ((((h).flags)&0x7000) >> 12)
-#define AA(h)      (((h).flags)&0x0400)
-#define TC(h)      (((h).flags)&0x0200)
-#define RD(h)      (((h).flags)&0x0100)
-#define RA(h)      (((h).flags)&0x0080)
-#define RCODE(h)   (((h).flags)&0x000f)
+#define BADIP   ((ipv4_t)(0xffffff))
+
+#define Q(c,t) (((c) << 8) | (t))
 
 #define errorf(...) fprintf(stderr, __VA_ARGS__)
 #ifdef NETIP_DEBUG
@@ -79,69 +70,300 @@ typedef struct {
 #  define pktdump(io,m)
 #endif
 
-#define reply(m,f) ({\
-	(m)->flags = htons((f)); \
-	(m)->qd_count = 0; \
-	(m)->an_count = 0; \
-	(m)->ns_count = 0; \
-	(m)->ar_count = 0; \
-	(m)->dlen = DGRAM_HEADER_SIZE; \
-	memcpy((m)->dgram, (m), DGRAM_HEADER_SIZE); \
-})
+static uint32_t SERIAL = 0;
+static uint32_t TTL    = 300;
+
+typedef uint32_t ipv4_t;
+
+typedef struct {
+	size_t len;
+	char   data[];
+} name_t;
+
+static name_t* name_parse(const char *s);
+static name_t* name_extract(const char *b, size_t max);
+static char*   name_string(name_t *name);
+static int     name_is(name_t *name, const char *label, name_t *domain);
+static ssize_t name_search(name_t *haystack, name_t *needle);
+static ipv4_t  name_ip(name_t *query, name_t *tld);
+
+typedef struct {
+	size_t len;
+	size_t mark;
+	char   data[DGRAM_MAX_SIZE];
+} buf_t;
+
+typedef struct {
+	/* header */
+	uint16_t id;
+	uint16_t flags;
+	uint16_t qd_count;
+	uint16_t an_count;
+	uint16_t ns_count;
+	uint16_t ar_count;
+
+	ssize_t  len;
+	char     data[DGRAM_MAX_SIZE];
+	char    *dend;
+} msg_t;
+
+/*********************************************************************/
+
+static name_t *
+name_parse(const char *s)
+{
+	size_t len;
+	char *p, c;
+
+	len = strlen(s);
+	name_t *name = calloc(1, sizeof(name_t) + 1 + len + 1);
+	if (!name)
+		return NULL;
+
+	name->len = 1 + len + 1;
+	memcpy(name->data + 1, s, len);
+	name->data[0] = '.';
+
+	for (c = 0, p = name->data + len; p >= name->data; p--, c++) {
+		if (*p == '.') { *p-- = c; c = 0; }
+	}
+
+	return name;
+}
+
+static name_t *
+name_extract(const char *b, size_t max)
+{
+	size_t i, n;
+	name_t *name;
+
+	n = i = 0;
+	while (b[i]) {
+		debugf(". n=%li, i=%li, b[i]=%02x max=%li\n", n, i, b[i], max);
+		n += 1 + b[i];
+		i += 1 + b[i];
+		debugf(": n=%li, i=%li, b[i]=%02x max=%li\n", n, i, b[i], max);
+		if (i > max)
+			return NULL;
+	}
+
+	name = calloc(1, sizeof(name_t) + n + 1);
+	if (!name)
+		return NULL;
+
+	name->len = n + 1;
+	memcpy(name->data, b, n);
+	return name;
+}
 
 static char *
-extract_name(msg_t *h, char **rest)
+name_string(name_t *name)
 {
-	char *name;
-	size_t n, i, l;
+	size_t i, n;
+	char *s;
 
-	for (n = 0, i = DGRAM_HEADER_SIZE; i < h->dlen; ) {
-		if ((h->dgram[i] & 0xc0) == 0xc0) {
-			/* don't understand compression yet; bail */
-			return NULL;
-		}
-
-		if (h->dgram[i] == '\0') {
-			break;
-		}
-
-		l = h->dgram[i];
-		if (l > h->dlen) {
-			/* Whoa, that's some major corruption */
-			return NULL;
-		}
-		n += l + 1;
-		i += l + 1;
-	}
-
-	if (n == 0) {
-		/* don't support zero-length QNAMEs... */
+	s = calloc(1, name->len - 1);
+	if (!s)
 		return NULL;
-	}
 
-	debugf("name should be %li octets long\n", n);
-	name = calloc(n, sizeof(char));
-	if (!name) {
-		errorf("failed to allocate buffer for name extraction: %s (error %d)\n",
-				strerror(errno), errno);
-		return NULL;
+	memcpy(s, name->data + 1, name->len - 1);
+	for (n = i = 0; name->data[i]; i += name->data[i] + 1) {
+		n += name->data[i];
+		*(s + n) = '.';
+		n++;
 	}
-	memset(name, '.', n - 1);
+	*(s + name->len - 2) = '\0';
+	return s;
+}
 
-	for (n = 0, i = DGRAM_HEADER_SIZE; i < h->dlen; ) {
-		if (h->dgram[i] == '\0') {
-			break;
+static int
+name_eq(name_t *a, name_t *b)
+{
+	return a->len == b->len
+	    && memcmp(a, b, a->len) == 0;
+}
+
+static int
+name_is(name_t *name, const char *label, name_t *domain)
+{
+	ssize_t off;
+
+	off = name_search(name, domain);
+	if (off < 0                          /* name doesn't end in domain */
+	 || name->data[0] != strlen(label)   /* 1st label is too long      */
+	 || name->data[0] != off - 1         /* more than one prefix label */
+	 || memcmp(name->data + 1, label, name->data[0]) != 0)
+		return 0;
+
+	return 1; /* true */
+}
+
+static ssize_t
+name_search(name_t *haystack, name_t *needle)
+{
+	size_t i, n;
+
+	i = 0;
+	n = haystack->len;
+	while (n >= needle->len) {
+		if (memcmp(haystack->data + i, needle->data, needle->len) == 0)
+			return i;
+		n -= haystack->data[i] + 1;
+		i += haystack->data[i] + 1;
+	}
+	return -1;
+}
+
+static ipv4_t
+name_ip(name_t *query, name_t *tld)
+{
+	size_t i, a, n;
+	ssize_t end;
+	ipv4_t ip;
+	int octet;
+
+	end = name_search(query, tld);
+	if (end < 0)
+		return BADIP;
+
+	a = i = n = 0;
+	while (i < end) {
+		i += query->data[i] + 1;
+		if (n++ >= 4) {
+			a += query->data[a] + 1;
 		}
+	}
 
-		l = h->dgram[i];
-		memcpy(name + n, &h->dgram[0] + i + 1, l);
-		n += l + 1;
-		i += l + 1;
+	ip = 0;
+	for (n = 0; n < 4 && query->data[a]; n++, a += query->data[a] + 1) {
+		octet = 0;
+		for (i = 0; i < query->data[a]; i++) {
+			if (!isdigit(query->data[a + 1 + i]))
+				return BADIP;
+			octet = octet * 10 + query->data[a + 1 + i] - '0';
+		}
+		if (octet > 255)
+			return BADIP;
+		ip = ip << 8 | octet;
 	}
-	if (rest) {
-		*rest = &h->dgram[0] + i + 1;
+	if (ip == 0xffffffff)
+		return BADIP;
+
+	return htonl(ip);
+}
+
+/*********************************************************************/
+
+static inline char *
+msgins(msg_t *b) { return b->data + b->len; }
+
+static inline size_t
+msgleft(msg_t *b) { return DGRAM_MAX_SIZE - b->len; }
+
+static inline size_t
+min(size_t a, size_t b) { return a > b ? b : a; }
+
+static inline void
+msgcpy(msg_t *dst, const void *src, size_t n)
+{
+	n = min(msgleft(dst), n);
+	memcpy(msgins(dst), src, n);
+	dst->len += n;
+}
+
+static inline void msg8 (msg_t *dst, uint8_t  v) { msgcpy(dst, &v, sizeof(v)); }
+static inline void msg16(msg_t *dst, uint16_t v) { msgcpy(dst, &v, sizeof(v)); }
+static inline void msg32(msg_t *dst, uint32_t v) { msgcpy(dst, &v, sizeof(v)); }
+
+static inline void
+msgref(msg_t *m, size_t off) { msg16(m, htons(0xc000 | (DGRAM_HEADER_SIZE + off))); }
+
+static inline void
+msglabel(msg_t *m, const char *name)
+{
+	size_t n;
+	char *dst;
+
+	dst = msgins(m);
+	n = strlen(name);
+	*dst++ = n;
+	memcpy(dst, name, n);
+	m->len += 1 + n;
+}
+
+#define QR(h)      (((h).flags)&0x8000)
+#define OPCODE(h) ((((h).flags)&0x7000) >> 12)
+#define AA(h)      (((h).flags)&0x0400)
+#define TC(h)      (((h).flags)&0x0200)
+#define RD(h)      (((h).flags)&0x0100)
+#define RA(h)      (((h).flags)&0x0080)
+#define RCODE(h)   (((h).flags)&0x000f)
+
+static inline void
+reply(msg_t *m, uint16_t f)
+{
+	m->flags = htons(f);
+	m->qd_count = m->an_count = 0;
+	m->ns_count = m->ar_count = 0;
+	m->len = DGRAM_HEADER_SIZE;
+	memcpy(m->data, m, DGRAM_HEADER_SIZE);
+}
+
+static const char *
+qclass_name(uint16_t c)
+{
+	static const char *known[] = { NULL,
+		"IN",
+	};
+	static int n = 1;
+
+	if (c < 1 || c > n) {
+		return "(unknown)";
 	}
-	return name;
+	return known[c];
+}
+
+static const char *
+qtype_name(uint16_t t)
+{
+	static const char *known[] = { NULL,
+		"A",
+		"NS",
+		"MD",
+		"MF",
+		"CNAME",
+		"SOA",
+		"MB",
+		"MG",
+		"MR",
+		"NULL",
+		"WKS",
+		"PTR",
+		"HINFO",
+		"MINFO",
+		"MX",
+		"TXT",
+	};
+	static int n = 16;
+
+	if (t < 1 || t > n) {
+		return "(unknown)";
+	}
+	return known[t];
+}
+
+static int
+is_soa(const char *name, const char *base)
+{
+	size_t namelen, baselen, n;
+
+	namelen = strlen(name);
+	baselen = strlen(base);
+	if (namelen >= baselen
+	 && memcmp(name + namelen - baselen, base, baselen) == 0) {
+		return 1;
+	}
+	return 0;
 }
 
 static int
@@ -160,79 +382,36 @@ is_ns(const char *name, const char *base)
 }
 
 static ipv4_t
-convertip(const char *ip)
+ip_parse(const char *ip)
 {
 	struct sockaddr_in ipv4;
-	if (inet_pton(AF_INET, ip, &ipv4.sin_addr.s_addr) != 1) {
+
+	if (!ip || !*ip) {
+		ip = "127.0.0.1";
+	}
+	if (!inet_pton(AF_INET, ip, &ipv4.sin_addr.s_addr)) {
 		return 0;
 	}
-	return ntohl(ipv4.sin_addr.s_addr);
+	return ipv4.sin_addr.s_addr;
 }
 
-static int
-ipv4quad(const char *s)
+static uint32_t
+serial_parse(const char *s)
 {
 	long q;
 	char *end = NULL;
 
+	if (*s == '-' && !*(s+1)) {
+		time_t t = time(NULL);
+		return t < 0 ? 0 : t;
+	}
+
 	q = strtol(s, &end, 10);
-	if ((end && *end) || q < 0 || q > 255)
-		return -1;
-	return (int)q;
-}
-
-static ipv4_t
-extract_ip(const char *_name, const char *base)
-{
-	size_t namelen, baselen, n;
-	char *a, *b, *name;
-	union {
-		uint8_t q[4];
-		ipv4_t  v;
-	} ip;
-	int quad;
-
-	name = strdup(_name);
-	namelen = strlen(name);
-	baselen = strlen(base);
-	if (namelen < baselen) {
-		/* `name' is too short to end with `base' */
-		return 0;
-	}
-
-	if (memcmp(name + namelen - baselen, base, baselen) != 0) {
-		/* `name' does not end with `base' */
-		return 0;
-	}
-
-	/* work backwards, finding each [a..b] that describes
-	   an octet, until we find all 4 */
-	n = 0;
-	b = name + namelen - baselen - 1;
-	*b = '\0';
-	for (;;) {
-		a = strrchr(name, '.');
-		if (a) b = a + 1;
-		else   a = b = name;
-
-		quad = ipv4quad(b);
-		if (quad < 0) {
-			/* `name' does not contain a valid IPv4 dotted-quad address. */
-			debugf("quad '%s' is bad\n", b);
-			return 0;
-		}
-		ip.q[n++] = quad;
-		if (n >= 4) break;
-		if (a == name) break;
-
-		*a = '\0';
-	}
-
-	return ip.v;
+	return (end && *end) || q < 0 ? 0 : q;
 }
 
 static int
-listen_on(const char *host, int port)
+listen_on(ipv4_t ip, int port)
 {
 	int rc, fd, val;
 	struct sockaddr_in ipv4;
@@ -252,15 +431,9 @@ listen_on(const char *host, int port)
 		/* no point in failing; just keep going */
 	}
 
-	ipv4.sin_family = AF_INET;
-	ipv4.sin_port   = htons(port);
-	rc = inet_pton(ipv4.sin_family, host, &ipv4.sin_addr);
-	if (rc != 1) {
-		errorf("unable to parse bind address %s:%d: %s (error %d)\n",
-			host, port, strerror(errno), errno);
-		close(fd);
-		return -1;
-	}
+	ipv4.sin_family      = AF_INET;
+	ipv4.sin_port        = htons(port);
+	ipv4.sin_addr.s_addr = ip;
 
 	rc = bind(fd, (struct sockaddr*)&ipv4, sizeof(ipv4));
 	if (rc != 0) {
@@ -274,79 +447,255 @@ listen_on(const char *host, int port)
 }
 
 static int
-parseaddr(const char *addr, char **host, int *port)
+bind_parse(const char *addr, ipv4_t *ip, int *port)
 {
-	char *p, *end;
+	char *p, *end, *host;
 	long _port;
 
 	errno = EINVAL;
+	*port = 53;
 
-	*host = strdup(addr);
-	p = strchr(*host, ':');
-	if (!p) {
-		*port = 53;
+	host = strdup(addr);
+	p = strchr(host, ':');
+	if (p) {
+		*p++ = '\0';
+		if (!p) {
+			/* invalid 'host:' format (no port, colon present) */
+			free(host);
+			return -1;
+		}
+
+		_port = strtol(p, &end, 10);
+		if ((end && *end) || _port < 1 || _port > 65535) {
+			free(host);
+			return -1;
+		}
+		*port = _port;
+	}
+
+	*ip = ip_parse(host);
+	free(host);
+	return *ip && *ip != 0xffffffff ? 0 : -1;
+}
+
+static size_t
+namecpy(unsigned char *dst, const char *src)
+{
+	size_t n;
+	unsigned char *p, *end, c;
+
+	n = strlen(src);
+	memcpy(dst + 1, src, n);
+	*dst = '.';
+
+	for (c = 0, p = dst + n; p >= dst; p--, c++) {
+		if (*p == '.') {
+			*p-- = c;
+			c = 0;
+		}
+	}
+
+	return 1 + n;
+}
+
+static void
+msg_prep_reply(msg_t *m, uint16_t f)
+{
+	m->flags = htons(F_REPLY | f);
+	m->qd_count = htons(1);
+	m->an_count = m->ns_count = m->ar_count = 0;
+	for (m->len = DGRAM_HEADER_SIZE; m->data[m->len] != 0; m->len++)
+		;
+	m->len += 5; /* 00 [qclass] [qtype] */
+}
+
+static inline void
+msg_commit(msg_t *m)
+{
+	memcpy(m->data, m, DGRAM_HEADER_SIZE);
+}
+
+#define namelen(s) (1 + strlen(s))
+
+static int
+reply_soa(msg_t *m, name_t *query, name_t *tld, int ns)
+{
+	ssize_t off;
+	uint16_t rdlength;
+	uint32_t serial = htonl(SERIAL);
+	uint32_t ttl    = htonl(TTL);
+
+	off = name_search(query, tld);
+	if (off < 0) {
+		debugf("did not find base domain as suffix of query; refusing\n");
+		reply(m, REPLY_REFUSED);
 		return 0;
 	}
 
-	*p++ = '\0';
-	if (!p) {
-		/* invalid 'host:' format (no port, colon present) */
-		return -1;
+	msg_prep_reply(m, F_AA);
+	if (ns) {
+		m->ns_count = htons(1);
+	} else {
+		m->an_count = htons(1);
 	}
+	msg_commit(m);
 
-	_port = strtol(p, &end, 10);
-	if ((end && *end) || _port < 1 || _port > 65535) {
-		return -1;
-	}
-	*port = _port;
+	rdlength = namelen("ns1")        + 2     /* MNAME   */
+	         + namelen("hostmaster") + 2     /* RNAME   */
+	         + sizeof(serial)                /* SERIAL  */
+	         + sizeof(ttl)                   /* REFRESH */
+	         + sizeof(ttl)                   /* RETRY   */
+	         + sizeof(ttl)                   /* EXPIRE  */
+	         + sizeof(ttl);                  /* MINIMUM */
 
-	if (!**host) {
-		free(*host);
-		*host = strdup("127.0.0.1");
-	}
+	if (rdlength + m->len > DGRAM_MAX_SIZE)
+		return -1;
+	rdlength = htons(rdlength);
+
+	msgref(m, off);         /* NAME       */
+	msg16(m, htons(Q_SOA)); /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msglabel(m, "ns1");        /* MNAME   */
+	msgref(m, off);
+	msglabel(m, "hostmaster"); /*  RNAME  */
+	msgref(m, off);
+	msg32(m, serial);          /* SERIAL  */
+	msg32(m, ttl);             /* REFRESH */
+	msg32(m, ttl);             /* RETRY   */
+	msg32(m, ttl);             /* EXPIRE  */
+	msg32(m, ttl);             /* MINIMUM */
 	return 0;
 }
 
 static int
-aa_reply(msg_t *m, uint32_t ttl, ipv4_t ip)
+reply_ns(msg_t *m, name_t *query, name_t *tld, ipv4_t hostip)
 {
-	uint16_t v;
+	ssize_t off;
+	uint16_t rdlength;
+	uint32_t ttl = htonl(TTL);
 
-	m->flags = htons(F_REPLY | F_AA);
-	m->qd_count = 0;
-	m->an_count = htons(1);
-	m->ns_count = 0;
-	m->ar_count = 0;
-	/* reposition dlen to truncate Additional Records, if present */
-	for (m->dlen = DGRAM_HEADER_SIZE; m->dgram[m->dlen] != 0; m->dlen++)
-		;
-	m->dlen++;
-	m->dlen += sizeof(v);
-	m->dlen += sizeof(v);
-
-	if (m->dlen + sizeof(ttl) + sizeof(v) + sizeof(ip) > DGRAM_MAX_SIZE) {
-		debugf("query is too large to respond to; ignoring\n");
-		return -1;
+	off = name_search(query, tld);
+	if (off < 0) {
+		debugf("did not find base domain as suffix of query; refusing\n");
+		reply(m, REPLY_REFUSED);
+		return 0;
 	}
 
-	memcpy(m->dgram, m, DGRAM_HEADER_SIZE);
+	if (off != 0)
+		return reply_soa(m, query, tld, 1);
 
-	/* TTL */
-	ttl = htonl(ttl);
-	memcpy(m->dgram + m->dlen, &ttl, sizeof(ttl));
-	m->dlen += sizeof(ttl);
+	msg_prep_reply(m, F_AA);
+	m->an_count = htons(2);
+	m->ar_count = htons(2);
+	msg_commit(m);
 
-	/* RDLENGTH */
-	v = htons(sizeof(ip));
-	memcpy(m->dgram + m->dlen, &v, sizeof(v));
-	m->dlen += sizeof(v);
+	/*************************** NAMESERVER RECORDS */
+	rdlength = namelen("ns1") + 2; /* NSDNAME */
+	if (rdlength * 2 + m->len > DGRAM_MAX_SIZE)
+		return -1;
+	rdlength = htons(rdlength);
 
-	/* RDATA */
-	ip = htonl(ip);
-	memcpy(m->dgram + m->dlen, &ip, sizeof(ip));
-	m->dlen += sizeof(ip);
+	/* IN NS ns1 */
+	msgref(m, off);         /* NAME       */
+	msg16(m, htons(Q_NS));  /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msglabel(m, "ns1");        /* NSDNAME */
+	msgref(m, off);
+
+	/* IN NS ns2 */
+	msgref(m, off);         /* NAME       */
+	msg16(m, htons(Q_NS));  /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msglabel(m, "ns2");        /* NSDNAME */
+	msgref(m, off);
+
+
+	/****************************** ADDRESS RECORDS */
+	rdlength = sizeof(hostip); /* ADDRESS */
+	if (rdlength * 2 + m->len > DGRAM_MAX_SIZE)
+		return -1;
+	rdlength = htons(rdlength);
+
+	/* IN A ns1 */
+	msglabel(m, "ns1");     /* NAME       */
+	msgref(m, off);
+	msg16(m, htons(Q_A));   /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msg32(m, hostip);          /* ADDRESS */
+
+	/* IN A ns2 */
+	msglabel(m, "ns2");     /* NAME       */
+	msgref(m, off);
+	msg16(m, htons(Q_A));   /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msg32(m, hostip);          /* ADDRESS */
 
 	return 0;
+}
+
+static int
+reply_a(msg_t *m, ipv4_t ip)
+{
+	uint16_t rdlength;
+	uint32_t ttl = htonl(TTL);
+
+	msg_prep_reply(m, F_AA);
+	m->qd_count = htons(1);
+	m->an_count = htons(1);
+	msg_commit(m);
+
+	rdlength = sizeof(ip); /* ADDRESS */
+
+	if (rdlength + m->len > DGRAM_MAX_SIZE)
+		return -1;
+	rdlength = htons(rdlength);
+
+	/* IN A <query> */
+	msgref(m, 0);           /* NAME       */
+	msg16(m, htons(Q_A));   /* TYPE       */
+	msg16(m, htons(Q_IN));  /* CLASS      */
+
+	msg32(m, ttl);          /* TTL        */
+	msg16(m, rdlength);     /* RDLENGTH   */
+	                        /* RDATA      */
+	msg32(m, ip);              /* ADDRESS */
+
+	return 0;
+}
+
+static int
+reply_magic_a(msg_t *m, name_t *query, name_t *tld)
+{
+	ipv4_t ip;
+
+	ip = name_ip(query, tld);
+	if (!ip || ip == BADIP) {
+		debugf("failed to extract IPv4 address from query; replying NXDOMAIN\n");
+		reply(m, REPLY_NXDOMAIN);
+		return 0;
+	}
+
+	return reply_a(m, ip);
 }
 
 static int DO_SHUTDOWN = 0;
@@ -373,6 +722,7 @@ install_signal_handlers()
 	return 0;
 }
 
+
 #ifdef FUZZ
 #  define NEXT return 1
 #else
@@ -391,11 +741,12 @@ int main(int argc, char **argv)
 	ssize_t n;
 	msg_t msg;
 
-	char *name, *rest;
-	uint16_t qtype, qclass, v;
-	ipv4_t ip;
+	name_t *tld   = NULL; /* top-level domain */
+	name_t *query = NULL;
 
-	char *host, *domain;
+	char *name = NULL;
+	uint16_t qtype, qclass, v;
+	ipv4_t ip, hostip;
 	int port;
 #ifdef TESTER
 	int test_max = 0;
@@ -404,22 +755,24 @@ int main(int argc, char **argv)
 	struct timeval start, end;
 
 	struct option long_opts[] = {
-		{ "help",       no_argument, 0, 'h' },
-		{ "version",    no_argument, 0, 'v' },
-		{ "bind", required_argument, 0, 'b' },
-		{ "name", required_argument, 0, 'n' },
+		{ "help",           no_argument, 0, 'h' },
+		{ "version",        no_argument, 0, 'v' },
+		{ "bind",     required_argument, 0, 'b' },
+		{ "domain",   required_argument, 0, 'd' },
+		{ "serial",   required_argument, 0, 's' },
 #ifdef TESTER
-		{ "max",  required_argument, 0, 257 },
+		{ "max",      required_argument, 0, 257 },
 #endif
 		{ 0, 0, 0, 0 },
 	};
 
 	/* parse options */
-	domain = strdup("netip.cc");
-	host = strdup("127.0.0.1");
+	SERIAL = serial_parse("-");
+	tld = name_parse("netip.cc");
+	hostip = ip_parse("127.0.0.1");
 	port = 53;
 	for (;;) {
-		int c = getopt_long(argc, argv, "hvb:n:", long_opts, NULL);
+		int c = getopt_long(argc, argv, "hvb:d:s:", long_opts, NULL);
 		if (c == -1) break;
 
 		switch (c) {
@@ -448,8 +801,10 @@ int main(int argc, char **argv)
 			       "  -v, --version  Show version information\n"
 			       "  -b, --bind     Host IP address and port to bind (UDP)\n"
 			       "                 (defaults to 127.0.0.1:53)\n"
-			       "  -n, --name     Toplevel domain to resolve for\n"
+			       "  -d, --domain   Toplevel domain to resolve for\n"
 			       "                 (defaults to netip.cc)\n"
+			       "  -s, --serial   Set the SOA zone serial.  If set to '-',\n"
+			       "                 the current epoch timestamp is used (default)\n"
 #ifdef TESTER
 			       "  --max N        Maximum number of queries to field before\n"
 			       "                 exiting (for TESTING PURPOSES only)\n"
@@ -469,17 +824,20 @@ int main(int argc, char **argv)
 			return 0;
 
 		case 'b':
-			free(host);
-			rc = parseaddr(optarg, &host, &port);
+			rc = bind_parse(optarg, &hostip, &port);
 			if (rc != 0) {
 				errorf("invalid --bind address '%s'\n", optarg);
 				return 1;
 			}
 			break;
 
-		case 'n':
-			free(domain);
-			domain = strdup(optarg);
+		case 'd':
+			free(tld);
+			tld = name_parse(optarg);
+			break;
+
+		case 's':
+			SERIAL = serial_parse(optarg);
 			break;
 
 #ifdef TESTER
@@ -488,6 +846,11 @@ int main(int argc, char **argv)
 			break;
 #endif
 		}
+	}
+	if (!SERIAL) {
+		errorf("unable to automatically determine SOA serial: %s (error %d)\n",
+			strerror(errno), errno);
+		return 1;
 	}
 	rc = install_signal_handlers();
 	if (rc != 0) {
@@ -499,8 +862,7 @@ int main(int argc, char **argv)
 #ifdef FUZZ
 	fd = fileno(stdin);
 #else
-	debugf("binding %s:%d\n", host, port);
-	fd = listen_on(host, port);
+	fd = listen_on(hostip, port);
 	if (fd < 0) {
 		return 1;
 	}
@@ -511,12 +873,15 @@ int main(int argc, char **argv)
 #else
 	for (;;) {
 #endif
+		qtype  = 0;
+		qclass = 0;
+
 #ifndef FUZZ
 		len = sizeof(peer);
 		debugf("waiting to receive up to %d bytes on fd %d\n", DGRAM_MAX_SIZE, fd);
-		msg.dlen = recvfrom(fd, msg.dgram, DGRAM_MAX_SIZE,
+		msg.len = recvfrom(fd, msg.data, DGRAM_MAX_SIZE,
 			MSG_WAITALL, (struct sockaddr*)&peer, &len);
-		if (msg.dlen < 0) {
+		if (msg.len < 0) {
 			if (DO_SHUTDOWN) break;
 			errorf("failed to recvfrom() client: %s (error %d)\n",
 				strerror(errno), errno);
@@ -537,8 +902,8 @@ int main(int argc, char **argv)
 				strerror(errno), errno);
 		}
 #else
-		msg.dlen = read(fd, msg.dgram, DGRAM_MAX_SIZE);
-		if (msg.dlen < 0) {
+		msg.len = read(fd, msg.data, DGRAM_MAX_SIZE);
+		if (msg.len < 0) {
 			if (DO_SHUTDOWN) break;
 			errorf("failed to read from fd %d: %s (error %d)\n",
 				fd, strerror(errno), errno);
@@ -546,14 +911,14 @@ int main(int argc, char **argv)
 		}
 #endif
 
-		hexdump(stderr, msg.dgram, msg.dlen);
+		hexdump(stderr, msg.data, msg.len);
 
-		if (msg.dlen < DGRAM_HEADER_SIZE) {
-			debugf("short packet of %li octets received; ignoring\n", msg.dlen);
+		if (msg.len < DGRAM_HEADER_SIZE) {
+			debugf("short packet of %li octets received; ignoring\n", msg.len);
 			NEXT;
 		}
-		msg.dend = &msg.dgram[0] + msg.dlen;
-		memcpy(&msg, msg.dgram, DGRAM_HEADER_SIZE);
+		msg.dend = &msg.data[0] + msg.len;
+		memcpy(&msg, msg.data, DGRAM_HEADER_SIZE);
 		msg.flags = ntohs(msg.flags);
 
 		pktdump(stderr, &msg);
@@ -569,65 +934,69 @@ int main(int argc, char **argv)
 			goto reply;
 		}
 
-		name = extract_name(&msg, &rest);
-		if (name == NULL) {
+		query = name_extract(msg.data + DGRAM_HEADER_SIZE, msg.len - DGRAM_HEADER_SIZE);
+		if (!query) {
 			debugf("unable to extract QNAME; refusing\n");
 			reply(&msg, REPLY_REFUSED);
 			goto reply;
 		}
-		if (rest + 3 > msg.dend) {
-			debugf("malformed query packet; refusing\n");
+		if (DGRAM_HEADER_SIZE + query->len + 4 > msg.len) {
+			debugf("query is too short; refusing\n");
 			reply(&msg, REPLY_REFUSED);
 			goto reply;
 		}
-		memcpy(&qtype,  rest,     sizeof(qtype));  qtype  = ntohs(qtype);
-		memcpy(&qclass, rest + 2, sizeof(qclass)); qclass = ntohs(qclass);
-		if (qtype != 0x01 || qclass != 0x01) {
-			debugf("query is not for IN A; refusing\n");
+		memcpy(&qtype,  msg.data + DGRAM_HEADER_SIZE + query->len,     sizeof(qtype));  qtype  = ntohs(qtype);
+		memcpy(&qclass, msg.data + DGRAM_HEADER_SIZE + query->len + 2, sizeof(qclass)); qclass = ntohs(qclass);
+
+		fprintf(stderr, "qtype = %04x %04x\n", qtype, qclass);
+		name = name_string(query);
+		fprintf(stderr, "recv %s %s %s\n", qclass_name(qclass), qtype_name(qtype), name);
+		switch (Q(qclass, qtype)) {
+		case Q_IN_SOA:
+			debugf("replying to IN SOA query\n");
+			rc = reply_soa(&msg, query, tld, 0);
+			if (rc != 0) NEXT;
+			goto reply;
+
+		case Q_IN_NS:
+			debugf("replying to IN NS query\n");
+			rc = reply_ns(&msg, query, tld, hostip);
+			if (rc != 0) NEXT;
+			goto reply;
+
+		case Q_IN_A:
+			debugf("replying to IN A query\n");
+			if (name_is(query, "ns1", tld)
+			 || name_is(query, "ns2", tld)
+			 || name_is(query, "www", tld)
+			 || name_eq(query,        tld)) {
+				rc = reply_a(&msg, hostip);
+			} else {
+				rc = reply_magic_a(&msg, query, tld);
+			}
+			if (rc != 0) NEXT;
+			goto reply;
+
+		default:
+			debugf("unhandled query type %s %s received (%04x); refusing\n",
+				qclass_name(qclass), qtype_name(qtype), Q(qclass, qtype));
 			reply(&msg, REPLY_REFUSED);
 			goto reply;
 		}
-
-		debugf("looking up '%s'\n", name);
-		if (is_ns(name, domain)) {
-			ip = convertip(host);
-			if (ip == 0) {
-				debugf("failed to convert %s into an IP (somehow); replying NXDOMAIN", host);
-				reply(&msg, REPLY_NXDOMAIN);
-				goto reply;
-			}
-			debugf("ns ip: %04x\n", ip);
-
-		} else {
-			/* extract the IP given the basename ".netip.cc" */
-			ip = extract_ip(name, domain);
-			if (ip == 0 || ip == 0xffffffff) {
-				debugf("invalid domain %s; replying NXDOMAIN\n", name);
-				reply(&msg, REPLY_NXDOMAIN);
-				goto reply;
-			}
-			debugf("ip: %04x\n", ip);
-		}
-
-		/* respond */
-		rc = aa_reply(&msg, 0, ip);
-		if (rc != 0) {
-			NEXT;
-		}
-		hexdump(stderr, msg.dgram, msg.dlen);
 
 reply:
+		hexdump(stderr, msg.data, msg.len);
 #ifndef FUZZ
-		debugf("replying in %li bytes on fd %d\n", msg.dlen, fd);
-		n = sendto(fd, msg.dgram, msg.dlen, 0, (struct sockaddr*)&peer, len);
+		debugf("replying in %li bytes on fd %d\n", msg.len, fd);
+		n = sendto(fd, msg.data, msg.len, 0, (struct sockaddr*)&peer, len);
 		if (n < 0) {
 			if (DO_SHUTDOWN) break;
 			debugf("failed sending response: %s (error %d)\n",
 				strerror(errno), errno);
 			NEXT;
 		}
-		if (n != msg.dlen) {
-			debugf("short write (only %li/%li bytes written)!\n", n, msg.dlen);
+		if (n != msg.len) {
+			debugf("short write (only %li/%li bytes written)!\n", n, msg.len);
 			NEXT;
 		}
 
@@ -648,16 +1017,18 @@ reply:
 			   + (end.tv_usec - start.tv_usec);
 
 			msg.flags = ntohs(msg.flags);
-			printf("query %02x %s %s %lu (ms)\n", RCODE(msg), (RCODE(msg) ? "invalid" : "valid"), name, ts);
+			printf("query %s %s %s rcode %02x %s %luus\n",
+					qclass_name(qclass), qtype_name(qtype), name,
+					RCODE(msg), (RCODE(msg) ? "invalid" : "valid"), ts);
 		}
 #endif
-		free(name); name = NULL;
+		free(name);  name  = NULL;
+		free(query); query = NULL;
 
 		NEXT;
 	}
 
-	free(domain);
-	free(host);
+	free(tld);
 	close(fd);
 	return 0;
 }
