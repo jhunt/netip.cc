@@ -1,5 +1,7 @@
 <html>
 <head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,intial-scale=1">
 <title>netip.cc</title>
 <style type="text/css">
 html, body {
@@ -11,9 +13,6 @@ html, body {
   font-weight: bold;
 }
 * { font-family: inherit; }
-body { margin: 2em auto; }
-body { width: 35em; }
-pre  { width: 30em; }
 header { white-space: pre; }
 p, pre {
   line-height: 1.3em;
@@ -31,6 +30,18 @@ h1 {
   margin: 2em 0 0 0;
 }
 p.copyright { color: #050; }
+
+@media (min-width:300px) {
+body { width: 90%; padding: 2%; }
+.wide   { display: none; }
+.narrow { display: block; }
+}
+@media (min-width:500px) {
+body { width: 35em; margin: 2em auto; }
+pre  { width: 30em; }
+.wide   { display: block; }
+.narrow { display: none; }
+}
 </style>
 </head>
 <body>
@@ -46,9 +57,12 @@ p.copyright { color: #050; }
 <h1>fast, reliable wildcard dns</h1>
 <p>When a *.netip.cc domain is resolved, the
 embedded IP address is returned as the corresponding A record:</p>
-<pre>                        <b>10.20.30.40</b>.netip.cc
+<pre class="wide">                        <b>10.20.30.40</b>.netip.cc
              api.system.<b>10.20.30.40</b>.netip.cc
 a.b.c.d.e.f.g.h.i.j.k.l.<b>10.20.30.40</b>.netip.cc</pre>
+<pre class="narrow">           <b>10.20.30.40</b>.netip.cc
+   api.sys.<b>10.20.30.40</b>.netip.cc
+ a.b.c.d.e.<b>10.20.30.40</b>.netip.cc</pre>
 <p>To use it, just make up a name! When you need a DNS entry, use
 <b>name.$IP.netip.cc</b>.  You can also run your own netip
 resolver, on your own servers, using your own base domain.</p>
@@ -56,11 +70,13 @@ resolver, on your own servers, using your own base domain.</p>
 <ul>
   <li>For <a accesskey="l" href="https://github.com/jhunt/netip.cc/releases/download/v1.0/netip-linux-64">[L]inux 64-bit</a></li>
   <li>For <a accesskey="m" href="https://github.com/jhunt/netip.cc/releases/download/v1.0/netip-darwin-64">[M]ac OS X 64-bit</a></li>
-  <li>or, just get the <a accesskey="s" href="https://github.com/jhunt/netip.cc">[S]ource Code</a></li>
+  <li>or, <span class="wide">just get </span>the <a accesskey="s" href="https://github.com/jhunt/netip.cc">[S]ource Code</a></li>
 </ul>
 <p>Usage is straightforward:</p>
-<pre>$ ./netip -n <b>your.base.tld</b> -b <b>ip.ad.dr.ess</b>:53 &amp;</pre>
-<p class="copyright">copyright &copy; 2016 James Hunt</p>
+<pre class="wide">$ ./netip -n <b>your.base.tld</b> -b <b>ip.ad.dr.ess</b>:53 &amp;</pre>
+<pre class="narrow">$ ./netip -n <b>your.base.tld</b> \
+          -b <b>ip.ad.dr.ess</b>:53 &amp;</pre>
+<p class="copyright">copyright &copy; 2017 James Hunt</p>
 <script type="text/javascript">
 (function () {
   var keys = {};
