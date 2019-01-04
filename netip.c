@@ -20,21 +20,24 @@
 
 #define F_REPLY    0x8000
 #define F_AA       0x0400
+#define F_NOERROR  0x0000
 #define F_NXDOMAIN 0x0003
 #define F_REFUSED  0x0005
 
 #define REPLY_REFUSED  (F_REPLY |        F_REFUSED)
 #define REPLY_NXDOMAIN (F_REPLY | F_AA | F_NXDOMAIN)
 
-#define Q_IN     0x01
+#define Q_IN      0x01
 
-#define Q_A      0x01
-#define Q_NS     0x02
-#define Q_SOA    0x06
+#define Q_A       0x01
+#define Q_AAAA    0x1c
+#define Q_NS      0x02
+#define Q_SOA     0x06
 
-#define Q_IN_A   0x0101
-#define Q_IN_NS  0x0102
-#define Q_IN_SOA 0x0106
+#define Q_IN_A    0x0101
+#define Q_IN_AAAA 0x011c
+#define Q_IN_NS   0x0102
+#define Q_IN_SOA  0x0106
 
 #define BADIP   ((ipv4_t)(0xffffff))
 
@@ -645,6 +648,17 @@ reply_ns(msg_t *m, name_t *query, name_t *tld, ipv4_t hostip)
 }
 
 static int
+reply_aaaa(msg_t *m)
+{
+	msg_prep_reply(m, F_NOERROR);
+	m->qd_count = htons(1);
+	m->an_count = htons(0);
+	msg_commit(m);
+
+	return 0;
+}
+
+static int
 reply_a(msg_t *m, ipv4_t ip)
 {
 	uint16_t rdlength;
@@ -965,6 +979,12 @@ int main(int argc, char **argv)
 			} else {
 				rc = reply_magic_a(&msg, query, tld);
 			}
+			if (rc != 0) NEXT;
+			goto reply;
+
+		case Q_IN_AAAA:
+			debugf("replying to IN AAAA query\n");
+			rc = reply_aaaa(&msg);
 			if (rc != 0) NEXT;
 			goto reply;
 
