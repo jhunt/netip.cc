@@ -1,7 +1,7 @@
 netip.cc
 ========
 
-    netip 1.1 - a fast, echo-response DNS server
+    netip 1.2 - a fast, echo-response DNS server
     Copyright (c) James Hunt <james@niftylogic.com>
 
     USAGE: ./netip [-b host:port] [-n base.tld]
