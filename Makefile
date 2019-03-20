@@ -1,3 +1,6 @@
+VERSION := 1.1
+CPPFLAGS += -DVERSION=\"$(VERSION)\"
+
 default: netip
 all: netip fuzzy tester
 

@@ -11,7 +11,9 @@
 #include <getopt.h>
 #include <time.h>
 
-#define VERSION "1.1"
+#ifndef VERSION
+#define VERSION "(dev)"
+#endif
 
 #define MICROSECONDS 1000000
 
@@ -783,7 +785,7 @@ int main(int argc, char **argv)
 		switch (c) {
 		case '?':
 		case 'h':
-			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
+			printf("netip " VERSION " - a fast, echo-response DNS server\n"
 			       "Copyright (c) James Hunt <james@niftylogic.com>\n"
 #ifdef TESTER
 			       "\n"
@@ -824,7 +826,7 @@ int main(int argc, char **argv)
 			return 0;
 
 		case 'v':
-			printf("netip v" VERSION " - a fast, echo-response DNS server\n"
+			printf("netip " VERSION " - a fast, echo-response DNS server\n"
 			       "Copyright (c) James Hunt <james@niftylogic.com>\n");
 			return 0;
 
