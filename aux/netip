@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if [[ -z ${BIND_IP:-} ]]; then
+	BIND_IP=$(ip addr show | awk '/inet .* global/ {print $2}' | sed -e 's@/.*@@' | head -n1)
+	if [[ -z $BIND_IP ]]; then
+		echo >&2 "Unable to detect local BIND_IP; please set the environment variable"
+		exit 1
+	fi
+fi
+
+DOMAIN=${DOMAIN:-netip.cc}
+echo "netip.cc starting up on [udp] $BIND_IP:53, serving '$DOMAIN'..."
+exec /usr/bin/netip -d $DOMAIN -b $BIND_IP:53
