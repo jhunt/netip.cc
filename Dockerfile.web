@@ -1,13 +1,4 @@
-FROM alpine:3 AS build
-RUN apk update \
- && apk add git make gcc libc-dev
-WORKDIR /build
-COPY . .
-RUN make clean netip \
- && chmod 0755 netip
-
-
-FROM alpine:3
+FROM nginx:1.17
 
 ARG BUILD_DATE
 ARG VCS_REF
@@ -18,8 +9,7 @@ LABEL maintainer="James Hunt <images@huntprod.com>" \
       org.label-schema.vcs-ref=$VCS_REF \
       org.label-schema.schema-version="1.0.0"
 
-COPY --from=build /build/netip /usr/bin/netip
-COPY aux/netip /netip
+COPY web /htdocs
+COPY nginx.conf /etc/nginx/nginx.conf
 
-EXPOSE 53/udp
-ENTRYPOINT ["/netip"]
+# vim:ft=Dockerfile
