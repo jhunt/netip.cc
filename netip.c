@@ -166,7 +166,7 @@ name_string(name_t *name)
 		return NULL;
 
 	memcpy(s, name->data + 1, name->len - 1);
-	for (i = 0; i < name->len && OFFSET(name->data[i]); i += OFFSET(name->data[i]) + 1)
+	for (i = OFFSET(name->data[0]); i < name->len && OFFSET(name->data[i+1]); i += OFFSET(name->data[i+1])+1)
 		s[i] = '.';
 	return s;
 }
