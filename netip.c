@@ -750,8 +750,9 @@ int main(int argc, char **argv)
 	ssize_t n;
 	msg_t msg;
 
-	name_t *tld   = NULL; /* top-level domain */
-	name_t *query = NULL;
+	char   *domain = NULL;
+	name_t *tld    = NULL; /* top-level domain */
+	name_t *query  = NULL;
 
 	char *name = NULL;
 	uint16_t qtype, qclass, v;
@@ -781,7 +782,7 @@ int main(int argc, char **argv)
 
 	/* parse options */
 	SERIAL = serial_parse("-");
-	tld = name_parse("netip.cc");
+	domain = strdup("netip.cc");
 	hostip = ip_parse("127.0.0.1");
 	port = 53;
 	for (;;) {
@@ -873,8 +874,8 @@ int main(int argc, char **argv)
 			break;
 
 		case 'd':
-			free(tld);
-			tld = name_parse(optarg);
+			free(domain);
+			domain = strdup(optarg);
 			break;
 
 		case 's':
@@ -888,15 +889,17 @@ int main(int argc, char **argv)
 #endif
 		}
 	}
+	tld = name_parse(optarg);
+
 	if (!a_idx) {
 		a_replies[a_idx++] = hostip;
 	}
-	debugf("loading %d answer(s) for IN A www.%s queries\n", a_idx, domain)
+	printf("loading %d answer(s) for IN A www.%s queries\n", a_idx, domain);
 
 	if (!ns_idx) {
 		ns_replies[ns_idx++] = hostip;
 	}
-	debugf("loading %d answer(s) for IN NS %s queries\n", ns_idx, domain)
+	printf("loading %d answer(s) for IN NS %s queries\n", ns_idx, domain);
 
 	if (!SERIAL) {
 		errorf("unable to automatically determine SOA serial: %s (error %d)\n",
