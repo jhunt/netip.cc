@@ -11,4 +11,4 @@ fi
 
 DOMAIN=${DOMAIN:-netip.cc}
 echo "netip.cc starting up on [udp] $BIND_IP:53, serving '$DOMAIN'..."
-exec /usr/bin/netip -d $DOMAIN -b $BIND_IP:53
+exec /usr/bin/netip -d $DOMAIN -b $BIND_IP:53 "$@"
