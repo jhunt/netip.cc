@@ -1,4 +1,4 @@
-VERSION := 1.2
+VERSION := 1.3
 CPPFLAGS += -DVERSION=\"$(VERSION)\"
 
 default: netip
@@ -6,11 +6,13 @@ all: netip fuzzy tester
 
 docker:
 	docker build \
+	  --build-arg VERSION="$(VERSION)" \
 	  --build-arg BUILD_DATE="$(shell date -u --iso-8601)" \
 	  --build-arg VCS_REF="$(shell git rev-parse --short HEAD)" \
 	  . -t huntprod/netip.cc:latest
 	
 	docker build -f Dockerfile.web \
+	  --build-arg VERSION="$(VERSION)" \
 	  --build-arg BUILD_DATE="$(shell date -u --iso-8601)" \
 	  --build-arg VCS_REF="$(shell git rev-parse --short HEAD)" \
 	  . -t huntprod/www.netip.cc:latest

@@ -750,9 +750,11 @@ int main(int argc, char **argv)
 	ssize_t n;
 	msg_t msg;
 
-	char   *domain = NULL;
-	name_t *tld    = NULL; /* top-level domain */
-	name_t *query  = NULL;
+	char *domain = NULL,
+	     *bind   = NULL;
+
+	name_t *tld   = NULL; /* top-level domain */
+	name_t *query = NULL;
 
 	char *name = NULL;
 	uint16_t qtype, qclass, v;
@@ -783,7 +785,7 @@ int main(int argc, char **argv)
 	/* parse options */
 	SERIAL = serial_parse("-");
 	domain = strdup("netip.cc");
-	hostip = ip_parse("127.0.0.1");
+	bind   = strdup("127.0.0.1:53");
 	port = 53;
 	for (;;) {
 		int c = getopt_long(argc, argv, "hvb:a:n:r:d:s:", long_opts, NULL);
@@ -840,12 +842,8 @@ int main(int argc, char **argv)
 			return 0;
 
 		case 'b':
-			rc = bind_parse(optarg, &hostip, &port);
-			if (rc != 0) {
-				errorf("invalid --bind address '%s'\n", optarg);
-				return 1;
-			}
-			break;
+			free(bind);
+			bind = strdup(optarg);
 
 		case 'a':
 			ip = ip_parse(optarg);
@@ -889,7 +887,15 @@ int main(int argc, char **argv)
 #endif
 		}
 	}
-	tld = name_parse(optarg);
+
+	rc = bind_parse(bind, &hostip, &port);
+	if (rc != 0) {
+		errorf("invalid --bind address '%s'\n", optarg);
+		return 1;
+	}
+
+	tld = name_parse(domain);
+	printf("netip.cc v" VERSION " starting up on [udp] %s, serving '%s'...\n", bind, domain);
 
 	if (!a_idx) {
 		a_replies[a_idx++] = hostip;
