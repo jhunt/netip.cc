@@ -736,6 +736,8 @@ install_signal_handlers()
 #  define NEXT continue
 #endif
 
+#define MAX_FIXED_ANSWER 8
+
 int main(int argc, char **argv)
 {
 	int rc;
@@ -753,8 +755,11 @@ int main(int argc, char **argv)
 
 	char *name = NULL;
 	uint16_t qtype, qclass, v;
-	ipv4_t ip, hostip;
-	int port;
+	ipv4_t ip, hostip,
+	       a_replies[MAX_FIXED_ANSWER],
+	       ns_replies[MAX_FIXED_ANSWER];
+	int port, a_idx = 0, ns_idx = 0,
+	    a_reply = 0, ns_reply = 0;
 #ifdef TESTER
 	int test_max = 0;
 #endif
@@ -765,6 +770,7 @@ int main(int argc, char **argv)
 		{ "help",           no_argument, 0, 'h' },
 		{ "version",        no_argument, 0, 'v' },
 		{ "bind",     required_argument, 0, 'b' },
+		{ "ns",       required_argument, 0, 'n' },
 		{ "domain",   required_argument, 0, 'd' },
 		{ "serial",   required_argument, 0, 's' },
 #ifdef TESTER
@@ -779,7 +785,7 @@ int main(int argc, char **argv)
 	hostip = ip_parse("127.0.0.1");
 	port = 53;
 	for (;;) {
-		int c = getopt_long(argc, argv, "hvb:d:s:", long_opts, NULL);
+		int c = getopt_long(argc, argv, "hvb:a:n:r:d:s:", long_opts, NULL);
 		if (c == -1) break;
 
 		switch (c) {
@@ -808,6 +814,8 @@ int main(int argc, char **argv)
 			       "  -v, --version  Show version information\n"
 			       "  -b, --bind     Host IP address and port to bind (UDP)\n"
 			       "                 (defaults to 127.0.0.1:53)\n"
+			       "  -a             IP address(es) for answering IN A queries\n"
+			       "  -n, --ns       IP address(es) for answering IN NS queries\n"
 			       "  -d, --domain   Toplevel domain to resolve for\n"
 			       "                 (defaults to netip.cc)\n"
 			       "  -s, --serial   Set the SOA zone serial.  If set to '-',\n"
@@ -838,6 +846,32 @@ int main(int argc, char **argv)
 			}
 			break;
 
+		case 'a':
+			ip = ip_parse(optarg);
+			if (!ip) {
+				errorf("invalid -a (IN A) answer '%s'\n", optarg);
+				return 1;
+			}
+			if (a_idx >= MAX_FIXED_ANSWER) {
+				errorf("too many -a (IN A) answers specified (max: %d)\n", MAX_FIXED_ANSWER);
+				return 1;
+			}
+			a_replies[a_idx++] = ip;
+			break;
+
+		case 'n':
+			ip = ip_parse(optarg);
+			if (!ip) {
+				errorf("invalid -n (IN NS) answer '%s'\n", optarg);
+				return 1;
+			}
+			if (ns_idx >= MAX_FIXED_ANSWER) {
+				errorf("too many -n (IN NS) answers specified (max: %d)\n", MAX_FIXED_ANSWER);
+				return 1;
+			}
+			ns_replies[ns_idx++] = ip;
+			break;
+
 		case 'd':
 			free(tld);
 			tld = name_parse(optarg);
@@ -854,6 +888,16 @@ int main(int argc, char **argv)
 #endif
 		}
 	}
+	if (!a_idx) {
+		a_replies[a_idx++] = hostip;
+	}
+	debugf("loading %d answer(s) for IN A www.%s queries\n", a_idx, domain)
+
+	if (!ns_idx) {
+		ns_replies[ns_idx++] = hostip;
+	}
+	debugf("loading %d answer(s) for IN NS %s queries\n", ns_idx, domain)
+
 	if (!SERIAL) {
 		errorf("unable to automatically determine SOA serial: %s (error %d)\n",
 			strerror(errno), errno);
@@ -967,17 +1011,42 @@ int main(int argc, char **argv)
 
 		case Q_IN_NS:
 			debugf("replying to IN NS query\n");
-			rc = reply_ns(&msg, query, tld, hostip);
+			rc = reply_a(&msg, ns_replies[ns_reply]);
+			ns_reply = (ns_reply + 1) % ns_idx;
 			if (rc != 0) NEXT;
 			goto reply;
 
 		case Q_IN_A:
 			debugf("replying to IN A query\n");
-			if (name_is(query, "ns1", tld)
-			 || name_is(query, "ns2", tld)
-			 || name_is(query, "www", tld)
-			 || name_eq(query,        tld)) {
-				rc = reply_a(&msg, hostip);
+			if (ns_idx >= 1 && name_is(query, "ns1", tld)) {
+				rc = reply_a(&msg, ns_replies[0]);
+
+			} else if (ns_idx >= 2 && name_is(query, "ns2", tld)) {
+				rc = reply_a(&msg, ns_replies[1]);
+
+			} else if (ns_idx >= 3 && name_is(query, "ns3", tld)) {
+				rc = reply_a(&msg, ns_replies[2]);
+
+			} else if (ns_idx >= 4 && name_is(query, "ns4", tld)) {
+				rc = reply_a(&msg, ns_replies[3]);
+
+			} else if (ns_idx >= 5 && name_is(query, "ns5", tld)) {
+				rc = reply_a(&msg, ns_replies[4]);
+
+			} else if (ns_idx >= 6 && name_is(query, "ns6", tld)) {
+				rc = reply_a(&msg, ns_replies[5]);
+
+			} else if (ns_idx >= 7 && name_is(query, "ns7", tld)) {
+				rc = reply_a(&msg, ns_replies[6]);
+
+			} else if (ns_idx >= 8 && name_is(query, "ns8", tld)) {
+				rc = reply_a(&msg, ns_replies[7]);
+
+			} else if (name_is(query, "www", tld)
+			        || name_eq(query,        tld)) {
+				rc = reply_a(&msg, a_replies[a_reply]);
+				a_reply = (a_reply + 1) % a_idx;
+
 			} else {
 				rc = reply_magic_a(&msg, query, tld);
 			}
