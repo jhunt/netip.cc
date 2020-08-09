@@ -3,6 +3,17 @@ CPPFLAGS += -DVERSION=\"$(VERSION)\"
 default: netip
 all: netip fuzzy tester
 
+assets: netip
+	@echo "Checking that VERSION was defined in the calling environment"
+	@test -n "$(VERSION)"
+	@echo "OK.  VERSION=$(VERSION)"
+	
+	docker run --rm --entrypoint='' huntprod/netip.cc:$(VERSION) \
+		cat /usr/bin/netip > netip-linux-64
+	mv netip netip-darwin-64
+	chmod 0755 netip-linux-64 \
+	           netip-darwin-64
+
 local:
 	docker build \
 	  --build-arg BUILD_DATE="$(shell date -u --iso-8601)" \
@@ -18,6 +29,7 @@ release:
 	@echo "Checking that VERSION was defined in the calling environment"
 	@test -n "$(VERSION)"
 	@echo "OK.  VERSION=$(VERSION)"
+	
 	docker build \
 	  --build-arg VERSION="$(VERSION)" \
 	  --build-arg BUILD_DATE="$(shell date -u --iso-8601)" \

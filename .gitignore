@@ -1,4 +1,6 @@
 /netip
+/netip-linux-64
+/netip-darwin-64
 /fuzzy
 /tester
 /fuzz/findings
