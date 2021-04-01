@@ -844,6 +844,7 @@ int main(int argc, char **argv)
 		case 'b':
 			free(bind);
 			bind = strdup(optarg);
+			break;
 
 		case 'a':
 			ip = ip_parse(optarg);
