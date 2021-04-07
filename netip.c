@@ -125,6 +125,7 @@ typedef struct {
 } challenge_t;
 
 typedef struct {
+	int  enabled;
 	char key[crypto_secretbox_KEYBYTES];
 
 	size_t        used; /* how many cache entries are valid?  */
@@ -1189,6 +1190,7 @@ int main(int argc, char **argv)
 		}
 		/* decode the key */
 		b16d(acme.key, keyhex, n);
+		acme.enabled = 1;
 	}
 
 	if (token) {
@@ -1386,7 +1388,7 @@ int main(int argc, char **argv)
 			} else if (ns_idx >= 8 && name_is(query, "ns8", tld)) {
 				rc = reply_a(&msg, ns_replies[7]);
 
-			} else if (name_begins(query, "_acme-challenge", tld)) {
+			} else if (acme.enabled && name_begins(query, "_acme-challenge", tld)) {
 				acme_save(&acme, query);
 				/* still reply magically */
 				rc = reply_magic_a(&msg, query, tld);
@@ -1402,19 +1404,19 @@ int main(int argc, char **argv)
 			if (rc != 0) NEXT;
 			goto reply;
 
-		case Q_IN_TXT:
-			if (name_begins(query, "_acme-challenge", tld)) {
-				rc = reply_acme(&msg, &acme, query);
-			}
-			if (rc != 0) NEXT;
-			goto reply;
-
 		case Q_IN_AAAA:
 			debugf("replying to IN AAAA query\n");
 			rc = reply_aaaa(&msg);
 			if (rc != 0) NEXT;
 			goto reply;
 
+		case Q_IN_TXT:
+			if (acme.enabled && name_begins(query, "_acme-challenge", tld)) {
+				rc = reply_acme(&msg, &acme, query);
+				if (rc != 0) NEXT;
+				goto reply;
+			}
+			/* otherwise fall-through, treating TXT as unhandled */
 		default:
 			debugf("unhandled query type %s %s received (%04x); refusing\n",
 				qclass_name(qclass), qtype_name(qtype), Q(qclass, qtype));
