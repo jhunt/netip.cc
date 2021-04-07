@@ -361,7 +361,7 @@ acme_save(acme_t *acme, name_t *query)
 	      into '_acme-challenge.tld' */
 	b = strchr(s, '.'); if (!b) goto done; b++;
 	memmove(b, a, strlen(a) + 1);
-	debugf("acme set [%s] challenge to [%s]\n", s, token);
+	fprintf(stderr, "acme %s for %s\n", token, s);
 	acme_set(acme, token, s);
 
 done:

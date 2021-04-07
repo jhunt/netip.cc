@@ -123,7 +123,6 @@ unseal(const char *nonce, char *sealed, size_t len, const char *key)
 	b32d(_nonce, nonce, ENCODED_NONCE_LEN);
 
 	/* decode the input */
-	fprintf(stderr, "len %li will decode to %li; of which 5 bytes are freshness\n", len, b32dlen(len));
 	b32d(buf, sealed, len);
 	len = b32dlen(len);
 
@@ -152,7 +151,6 @@ unseal(const char *nonce, char *sealed, size_t len, const char *key)
 	text = malloc(len-5+1);
 	if (!text) goto fail;
 	memset(text, 0, len-5+1);
-	fprintf(stderr, "copying %li bytes into token; null-term at [%li]\n", len-5, len-5+1);
 	memcpy(text, buf+5, len-5);
 	return text;
 
