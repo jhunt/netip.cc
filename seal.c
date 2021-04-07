@@ -30,7 +30,8 @@ seal_keygen()
 ssize_t
 seal(char **nonce, char **sealed, unsigned long until, const char *text, size_t len, const char *key)
 {
-	char *buf, *_sealed;
+	char *buf     = NULL,
+	     *_sealed = NULL;
 	char _nonce[crypto_secretbox_NONCEBYTES];
 
 	/* check yo-self */
@@ -45,7 +46,6 @@ seal(char **nonce, char **sealed, unsigned long until, const char *text, size_t 
 	/* initialize to sane defaults;
 	   this makes free(3) calls simpler.
 	 */
-	buf = _sealed = NULL;
 	*nonce = *sealed = NULL;
 
 	/* generate a random nonce (unencoded) */

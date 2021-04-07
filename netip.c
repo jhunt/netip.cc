@@ -130,11 +130,11 @@ typedef struct {
 	size_t        used; /* how many cache entries are valid?  */
 	size_t        next; /* where do we insert the next entry? */
 	challenge_t   cache[MAX_CHALLENGES];
-} challenges_t;
+} acme_t;
 
-static void acme_save(challenges_t *acme, name_t *query);
-static void acme_set(challenges_t *acme, const char *token, const char *domain);
-static void acme_free(challenges_t *acme);
+static void acme_save(acme_t *acme, name_t *query);
+static void acme_set(acme_t *acme, const char *token, const char *domain);
+static void acme_free(acme_t *acme);
 
 /*********************************************************************/
 
@@ -318,18 +318,18 @@ extract_delimited(char *s, char dlm, char **end)
 }
 
 static void
-acme_save(challenges_t *acme, name_t *query)
+acme_save(acme_t *acme, name_t *query)
 {
 	/* parse a name like `_acme-challenge.$NON.CE._.$SEA.LED.x.y.z`
 	   to get back $NONCE and $SEALED; returning 0 if we succeeded.
 	 */
 
-	char *token, *nonce, *sealed;
+	char *token  = NULL,
+	     *nonce  = NULL,
+	     *sealed = NULL;
 	char *s, *a, *b;
-	time_t now;
-	unsigned long notafter;
-
-	token = nonce = sealed = NULL;
+	time_t now = 0;
+	unsigned long notafter = 0;
 
 	a = s = name_string(query);
 	debugf("acme in [%s]\n", s);
@@ -381,7 +381,7 @@ acme_set_at(challenge_t *ch, const char *token, const char *domain)
 }
 
 static void
-acme_set(challenges_t *acme, const char *token, const char *domain)
+acme_set(acme_t *acme, const char *token, const char *domain)
 {
 	size_t i;
 	name_t *q;
@@ -408,7 +408,7 @@ done:
 }
 
 static void
-acme_free(challenges_t *acme)
+acme_free(acme_t *acme)
 {
 	size_t i;
 	for (i = 0; i < acme->used; i++) {
@@ -895,7 +895,7 @@ reply_txt(msg_t *m, const char *txt)
 }
 
 static int
-reply_acme(msg_t *m, challenges_t *acme, name_t *query)
+reply_acme(msg_t *m, acme_t *acme, name_t *query)
 {
 	size_t i;
 
@@ -991,7 +991,7 @@ int main(int argc, char **argv)
 	int test_max = 0;
 #endif
 
-	challenges_t acme;
+	acme_t acme;
 
 	struct timeval start, end;
 
