@@ -3,6 +3,17 @@ CPPFLAGS += -DVERSION=\"$(VERSION)\"
 default: netip
 all: netip fuzzy tester
 
+netip: base16.o base32.o seal.o
+netip: LDLIBS := -lsodium
+
+base32.o: base32.h base32.c
+	$(CC) -c -o $@ base32.c
+base16.o: base16.h base16.c
+	$(CC) -c -o $@ base16.c
+
+acme: LDLIBS := -lsodium
+acme: acme.c base32.o base16.o seal.o
+
 assets: netip
 	@echo "Checking that VERSION was defined in the calling environment"
 	@test -n "$(VERSION)"
@@ -50,7 +61,9 @@ release:
 	docker push huntprod/www.netip.cc:latest
 	docker push huntprod/www.netip.cc:$(VERSION)
 
-fuzzy: fuzzy.o
+fuzzy: CFLAGS := -fPIE
+fuzzy: LDLIBS := -lsodium
+fuzzy: fuzzy.o base16.o base32.o seal.o
 fuzzy.o: netip.c
 	afl-clang $(CFLAGS) -DFUZZ -c -o $@ $+
 

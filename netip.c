@@ -10,6 +10,11 @@
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <time.h>
+#include <assert.h>
+
+#include "base16.h"
+#include "base32.h"
+#include "seal.h"
 
 #ifndef VERSION
 #define VERSION "(dev)"
@@ -35,11 +40,13 @@
 #define Q_AAAA    0x1c
 #define Q_NS      0x02
 #define Q_SOA     0x06
+#define Q_TXT     0x10
 
 #define Q_IN_A    0x0101
 #define Q_IN_AAAA 0x011c
 #define Q_IN_NS   0x0102
 #define Q_IN_SOA  0x0106
+#define Q_IN_TXT  0x0110
 
 #define BADIP   ((ipv4_t)(0xffffff))
 
@@ -55,7 +62,7 @@
 	for (____n = 0; ____n < (l); ____n++) { \
 		if (____n && ____n % 16 == 0) \
 			fprintf((io), "\n"); \
-		fprintf((io), (____n > 12 && isprint((b)[____n]) ? " %c " : "%02x "), (unsigned char)(b)[____n]); \
+		fprintf((io), (____n > 12 && isprint((b)[____n]) || isalnum((b)[____n]) || ispunct((b)[____n]) ? " %c " : "%02x "), (unsigned char)(b)[____n]); \
 	} \
 	fprintf((io), "\n"); \
 })
@@ -91,6 +98,7 @@ static name_t* name_parse(const char *s);
 static name_t* name_extract(const char *b, size_t max);
 static char*   name_string(name_t *name);
 static int     name_is(name_t *name, const char *label, name_t *domain);
+static int     name_eq(name_t *a, name_t *b);
 static ssize_t name_search(name_t *haystack, name_t *needle);
 static ipv4_t  name_ip(name_t *query, name_t *tld);
 
@@ -107,6 +115,27 @@ typedef struct {
 	char     data[DGRAM_MAX_SIZE];
 	char    *dend;
 } msg_t;
+
+#define MAX_TOKEN_BYTES  255
+#define MAX_CHALLENGES  8192
+
+typedef struct {
+	char     token[MAX_TOKEN_BYTES]; /* 0-terminated */
+	name_t  *subject;
+} challenge_t;
+
+typedef struct {
+	int  enabled;
+	char key[crypto_secretbox_KEYBYTES];
+
+	size_t        used; /* how many cache entries are valid?  */
+	size_t        next; /* where do we insert the next entry? */
+	challenge_t   cache[MAX_CHALLENGES];
+} acme_t;
+
+static void acme_save(acme_t *acme, name_t *query);
+static void acme_set(acme_t *acme, const char *token, const char *domain);
+static void acme_free(acme_t *acme);
 
 /*********************************************************************/
 
@@ -190,7 +219,21 @@ name_is(name_t *name, const char *label, name_t *domain)
 	 || memcmp(name->data + 1, label, OFFSET(name->data[0])) != 0)
 		return 0;
 
-	return 1; /* true */
+	return 1;
+}
+
+static int
+name_begins(name_t *name, const char *label, name_t *domain)
+{
+	ssize_t off;
+
+	off = name_search(name, domain);
+	if (off < 0                                  /* name doesn't end in domain */
+	 || OFFSET(name->data[0]) != strlen(label)   /* 1st label is too long      */
+	 || memcmp(name->data + 1, label, OFFSET(name->data[0])) != 0)
+		return 0;
+
+	return 1;
 }
 
 static ssize_t
@@ -248,6 +291,132 @@ name_ip(name_t *query, name_t *tld)
 	return htonl(ip);
 }
 
+static char *
+extract_delimited(char *s, char dlm, char **end)
+{
+	char *a, *b, *fragment;
+	size_t n;
+
+	assert(dlm != 0);
+
+	a = strchr(s, '.'); if (!a) return NULL; a++;
+	b = strchr(a, dlm); if (!b) return NULL; *(b-1) = '\0';
+	if (end) *end = b;
+
+	for (n = 0, b = a; *b; b++) {
+		if (*b == '.') continue;
+		n++;
+	}
+	fragment = malloc(n+1);
+	if (!fragment) return NULL;
+	for (n = 0, b = a; *b; b++) {
+		if (*b == '.') continue;
+		*(fragment + n) = *b;
+		n++;
+	}
+	*(fragment + n) = '\0';
+	return fragment;
+}
+
+static void
+acme_save(acme_t *acme, name_t *query)
+{
+	/* parse a name like `_acme-challenge.$NON.CE._.$SEA.LED.x.y.z`
+	   to get back $NONCE and $SEALED; returning 0 if we succeeded.
+	 */
+
+	char *token  = NULL,
+	     *nonce  = NULL,
+	     *sealed = NULL;
+	char *s, *a, *b;
+	time_t now = 0;
+	unsigned long notafter = 0;
+
+	a = s = name_string(query);
+	debugf("acme in [%s]\n", s);
+
+	/* extract the encoded nonce */
+	nonce = extract_delimited(a, '_', &a);
+	if (!nonce) goto done;
+	debugf("acme nonce is [%s]\n", nonce);
+
+	/* extract the sealed text */
+	sealed = extract_delimited(a, '_', &a);
+	if (!sealed) goto done;
+	debugf("acme sealed payload is [%s]\n", sealed);
+
+	/* unseal and authenticate */
+	token = unseal(nonce, sealed, strlen(sealed), acme->key);
+	if (!token) {
+		debugf("invalid acme signature\n");
+		goto done;
+	}
+
+	/* move past the final '_' label to get
+	   to the acme domain subject */
+	a++; a = strchr(a, '.'); if (!a) goto done; a++;
+
+	/* paste "over" the token bits in the query,
+	   turning '_acme-challenge.to.ke.n._.tld'
+	      into '_acme-challenge.tld' */
+	b = strchr(s, '.'); if (!b) goto done; b++;
+	memmove(b, a, strlen(a) + 1);
+	fprintf(stderr, "acme %s for %s\n", token, s);
+	acme_set(acme, token, s);
+
+done:
+	free(s);
+	free(token);
+	free(nonce);
+	free(sealed);
+	return;
+}
+
+static inline void
+acme_set_at(challenge_t *ch, const char *token, const char *domain)
+{
+	free(ch->subject);
+	ch->subject = name_parse(domain);
+	strncpy(ch->token, token, MAX_TOKEN_BYTES);
+	debugf("acme set %p %s -> %s\n", ch, domain, ch->token);
+}
+
+static void
+acme_set(acme_t *acme, const char *token, const char *domain)
+{
+	size_t i;
+	name_t *q;
+
+	q = name_parse(domain);
+	for (i = 0; i < acme->used; i++) {
+		if (name_eq(q, acme->cache[i].subject)) {
+			acme_set_at(&acme->cache[i], token, domain);
+			goto done;
+		}
+	}
+
+	acme_set_at(&acme->cache[acme->next], token, domain);
+	acme->next++;
+	if (acme->next >= MAX_CHALLENGES) {
+		acme->next = 0;
+		acme->used = MAX_CHALLENGES;
+	} else {
+		acme->used++;
+	}
+
+done:
+	free(q);
+}
+
+static void
+acme_free(acme_t *acme)
+{
+	size_t i;
+	for (i = 0; i < acme->used; i++) {
+		free(acme->cache[i].subject);
+	}
+}
+
 /*********************************************************************/
 
 static inline char *
@@ -270,6 +439,12 @@ msgcpy(msg_t *dst, const void *src, size_t n)
 static inline void msg8 (msg_t *dst, uint8_t  v) { msgcpy(dst, &v, sizeof(v)); }
 static inline void msg16(msg_t *dst, uint16_t v) { msgcpy(dst, &v, sizeof(v)); }
 static inline void msg32(msg_t *dst, uint32_t v) { msgcpy(dst, &v, sizeof(v)); }
+
+static inline void msgtxt(msg_t *dst, const char *v) {
+	uint8_t l = strlen(v) % 256;
+	msg8(dst, l);
+	msgcpy(dst,  v, l);
+}
 
 static inline void
 msgref(msg_t *m, size_t off) { msg16(m, htons(0xc000 | (DGRAM_HEADER_SIZE + off))); }
@@ -377,6 +552,24 @@ is_ns(const char *name, const char *base)
 	return 0;
 }
 
+static unsigned long
+seconds_parse(const char *s)
+{
+	unsigned long n = 0;
+
+	for (; *s; s++) {
+		switch (*s) {
+		default: return 0;
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+			n = (n * 10) + (*s - '0');
+			break;
+		}
+	}
+
+	return n;
+}
+
 static ipv4_t
 ip_parse(const char *ip)
 {
@@ -472,26 +665,6 @@ bind_parse(const char *addr, ipv4_t *ip, int *port)
 	*ip = ip_parse(host);
 	free(host);
 	return *ip && *ip != 0xffffffff ? 0 : -1;
-}
-
-static size_t
-namecpy(unsigned char *dst, const char *src)
-{
-	size_t n;
-	unsigned char *p, *end, c;
-
-	n = strlen(src);
-	memcpy(dst + 1, src, n);
-	*dst = '.';
-
-	for (c = 0, p = dst + n; p >= dst; p--, c++) {
-		if (*p == '.') {
-			*p-- = c;
-			c = 0;
-		}
-	}
-
-	return 1 + n;
 }
 
 static void
@@ -691,6 +864,54 @@ reply_a(msg_t *m, ipv4_t ip)
 }
 
 static int
+reply_txt(msg_t *m, const char *txt)
+{
+	uint16_t rdlength;
+	uint32_t ttl = htonl(TTL);
+
+	msg_prep_reply(m, F_AA);
+	m->qd_count = htons(1);
+	m->an_count = htons(1);
+	msg_commit(m);
+
+	debugf("txt is [%s]\n", txt);
+	hexdump(stderr, txt, strlen(txt)+1);
+	rdlength = strlen(txt) + 1; /* len-octet + data */
+
+	if (rdlength + m->len > DGRAM_MAX_SIZE)
+		return -1;
+	rdlength = htons(rdlength);
+
+	/* IN TXT <query> */
+	msgref(m, 0);           /* NAME      */
+	msg16(m, htons(Q_TXT)); /* TYPE      */
+	msg16(m, htons(Q_IN));  /* CLASS     */
+
+	msg32(m, ttl);          /* TTL       */
+	msg16(m, rdlength);     /* RDLENGTH  */
+	                        /* RDATA     */
+	msgtxt(m, txt);              /* TEXT */
+
+	return 0;
+}
+
+static int
+reply_acme(msg_t *m, acme_t *acme, name_t *query)
+{
+	size_t i;
+
+	for (i = 0; i < acme->used; i++) {
+		if (name_eq(query, acme->cache[i].subject)) {
+			reply_txt(m, acme->cache[i].token);
+			return 0;
+		}
+	}
+
+	reply(m, REPLY_NXDOMAIN);
+	return 0;
+}
+
+static int
 reply_magic_a(msg_t *m, name_t *query, name_t *tld)
 {
 	ipv4_t ip;
@@ -751,7 +972,11 @@ int main(int argc, char **argv)
 	msg_t msg;
 
 	char *domain = NULL,
-	     *bind   = NULL;
+	     *bind   = NULL,
+	     *keyhex = NULL,
+	     *token  = NULL;
+	unsigned long fresh;
+	char *optarg_n;
 
 	name_t *tld   = NULL; /* top-level domain */
 	name_t *query = NULL;
@@ -767,6 +992,8 @@ int main(int argc, char **argv)
 	int test_max = 0;
 #endif
 
+	acme_t acme;
+
 	struct timeval start, end;
 
 	struct option long_opts[] = {
@@ -776,19 +1003,27 @@ int main(int argc, char **argv)
 		{ "ns",       required_argument, 0, 'n' },
 		{ "domain",   required_argument, 0, 'd' },
 		{ "serial",   required_argument, 0, 's' },
+		{ "key",      required_argument, 0, 'k' },
+		{ "token",    required_argument, 0, 't' },
+		{ "fresh",    required_argument, 0, 'f' },
+		{ "keygen",         no_argument, 0, 'K' },
 #ifdef TESTER
 		{ "max",      required_argument, 0, 257 },
 #endif
 		{ 0, 0, 0, 0 },
 	};
 
+	/* initialize memory */
+	memset(&acme, 0, sizeof(acme));
+
 	/* parse options */
 	SERIAL = serial_parse("-");
 	domain = strdup("netip.cc");
 	bind   = strdup("127.0.0.1:53");
-	port = 53;
+	port   = 53;
+	fresh  = 30;
 	for (;;) {
-		int c = getopt_long(argc, argv, "hvb:a:n:r:d:s:", long_opts, NULL);
+		int c = getopt_long(argc, argv, "hvb:a:n:r:d:s:k:t:f:K", long_opts, NULL);
 		if (c == -1) break;
 
 		switch (c) {
@@ -815,6 +1050,21 @@ int main(int argc, char **argv)
 			       "\n"
 			       "  -h, --help     Show the help screen\n"
 			       "  -v, --version  Show version information\n"
+			       "\n"
+			       "Key Generation Options:\n\n"
+			       "  -K, --keygen   Generate a random key, hex-encode it,\n"
+			       "                 print it to standard output, then exit.\n"
+			       "\n"
+			       "Token Signing Options:\n\n"
+			       "  -t, --token    An ACME challenge token to encode, with the\n"
+			       "                 given key.  If this option is specified, netip\n"
+			       "                 prints the full A record prefix, suffixed with\n"
+			       "                 the --domain value, and then exits.\n"
+			       "  -f, --fresh    How long (in seconds) should the query be valid?\n"
+			       "                 Only makes sense with --token set.\n"
+			       "                 (defaults to 30)\n"
+			       "\n"
+			       "DNS Name Server Options:\n\n"
 			       "  -b, --bind     Host IP address and port to bind (UDP)\n"
 			       "                 (defaults to 127.0.0.1:53)\n"
 			       "  -a             IP address(es) for answering IN A queries\n"
@@ -823,6 +1073,8 @@ int main(int argc, char **argv)
 			       "                 (defaults to netip.cc)\n"
 			       "  -s, --serial   Set the SOA zone serial.  If set to '-',\n"
 			       "                 the current epoch timestamp is used (default)\n"
+			       "  -k, --key      Private key (hex-encoded) for validating\n"
+			       "                 ACME challenge setup requests.\n"
 #ifdef TESTER
 			       "  --max N        Maximum number of queries to field before\n"
 			       "                 exiting (for TESTING PURPOSES only)\n"
@@ -881,12 +1133,91 @@ int main(int argc, char **argv)
 			SERIAL = serial_parse(optarg);
 			break;
 
+		case 'k':
+			free(keyhex);
+			keyhex = strdup(optarg);
+			break;
+
+		case 't':
+			free(token);
+			token = strdup(optarg);
+			break;
+
+		case 'f':
+			fresh = seconds_parse(optarg);
+			if (fresh == 0) {
+				errorf("invalid --fresh value '%s'; not a positive integer\n", optarg);
+				return 1;
+			}
+			break;
+
+		case 'K':
+			fprintf(stdout, "%s\n", seal_keygen());
+			return 0;
+
 #ifdef TESTER
 		case 257: /* --max */
 			test_max = atoi(optarg);
 			break;
 #endif
 		}
+	}
+
+	if (keyhex) {
+		size_t i, n;
+		n = strlen(keyhex);
+		if (n < b16elen(crypto_secretbox_KEYBYTES)) {
+			fprintf(stderr, "invalid --key: too short (must be exactly %li octets; got %li)\n", b16elen(crypto_secretbox_KEYBYTES), n);
+			return 1;
+		}
+		if (n > b16elen(crypto_secretbox_KEYBYTES)) {
+			fprintf(stderr, "invalid --key: too long (must be exactly %li octets; got %li)\n", b16elen(crypto_secretbox_KEYBYTES), n);
+			return 1;
+		}
+		for (i = 0; i < n; i++) {
+			switch (keyhex[i]) {
+			case '0': case '1': case '2': case '3': case '4':
+			case '5': case '6': case '7': case '8': case '9':
+			case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+				continue;
+			case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+				keyhex[i] = keyhex[i] - 'A' + 'a';
+				break;
+			default:
+				fprintf(stderr, "invalid --key: must only contain hexadecimal digits (0-9, a-f)\n");
+				return 1;
+			}
+		}
+		/* decode the key */
+		b16d(acme.key, keyhex, n);
+		acme.enabled = 1;
+	}
+
+	if (token) {
+		if (!keyhex) {
+			fprintf(stderr, "you must specify a --key if you want to use --token.\n");
+			return 1;
+		}
+
+		char *nonce, *sealed;
+		size_t i;
+		rc = seal(&nonce, &sealed, time(NULL) + fresh, token, strlen(token), acme.key);
+		if (rc < 0) {
+			errorf("failed to generate signed ACME setup query.\n");
+			return 2;
+		}
+		fprintf(stdout, "_acme-challenge.");
+		for (i = 0; i < ENCODED_NONCE_LEN; i += 63) {
+			if (ENCODED_NONCE_LEN - i > 63) fprintf(stdout, "%.*s.", 63,                           nonce+i);
+			else                            fprintf(stdout, "%.*s",  (int)(ENCODED_NONCE_LEN - i), nonce+i);
+		}
+		fprintf(stdout, "._.");
+		for (i = 0; i < rc; i += 63) {
+			if (rc - i > 63) fprintf(stdout, "%.*s.", 63,            sealed+i);
+			else             fprintf(stdout, "%.*s",  (int)(rc - i), sealed+i);
+		}
+		fprintf(stdout, "._.%s\n", domain);
+		return 0;
 	}
 
 	rc = bind_parse(bind, &hostip, &port);
@@ -928,6 +1259,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 #endif
+
+	/* clean up unused memory */
+	free(domain);
+	free(bind);
+	free(keyhex);
 
 #ifdef TESTER
 	while (test_max-- > 0) {
@@ -1052,6 +1388,11 @@ int main(int argc, char **argv)
 			} else if (ns_idx >= 8 && name_is(query, "ns8", tld)) {
 				rc = reply_a(&msg, ns_replies[7]);
 
+			} else if (acme.enabled && name_begins(query, "_acme-challenge", tld)) {
+				acme_save(&acme, query);
+				/* still reply magically */
+				rc = reply_magic_a(&msg, query, tld);
+
 			} else if (name_is(query, "www", tld)
 			        || name_eq(query,        tld)) {
 				rc = reply_a(&msg, a_replies[a_reply]);
@@ -1069,6 +1410,13 @@ int main(int argc, char **argv)
 			if (rc != 0) NEXT;
 			goto reply;
 
+		case Q_IN_TXT:
+			if (acme.enabled && name_begins(query, "_acme-challenge", tld)) {
+				rc = reply_acme(&msg, &acme, query);
+				if (rc != 0) NEXT;
+				goto reply;
+			}
+			/* otherwise fall-through, treating TXT as unhandled */
 		default:
 			debugf("unhandled query type %s %s received (%04x); refusing\n",
 				qclass_name(qclass), qtype_name(qtype), Q(qclass, qtype));
@@ -1122,5 +1470,6 @@ reply:
 
 	free(tld);
 	close(fd);
+	acme_free(&acme);
 	return 0;
 }

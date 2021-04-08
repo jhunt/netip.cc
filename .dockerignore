@@ -1,6 +1,12 @@
 **
 !/Makefile
 !/aux
+!/base16.c
+!/base16.h
+!/base32.c
+!/base32.h
 !/netip.c
 !/nginx.conf
+!/seal.c
+!/seal.h
 !/web
