@@ -181,6 +181,11 @@ name_extract(const char *b, size_t max)
 
 	name->len = n + 1;
 	memcpy(name->data, b, n);
+	for (i = 0; i < n; i++) {
+		if (*(name->data+i) >= 'A' && *(name->data+i) <= 'Z') {
+			*(name->data+i) = *(name->data+i) - 'A' + 'a';
+		}
+	}
 	return name;
 }
 
