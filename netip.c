@@ -1352,7 +1352,7 @@ int main(int argc, char **argv)
 
 		fprintf(stderr, "qtype = %04x %04x\n", qtype, qclass);
 		name = name_string(query);
-		fprintf(stderr, "recv %s %s %s\n", qclass_name(qclass), qtype_name(qtype), name);
+		fprintf(stderr, "recv %s %s %s from peer %s:%d\n", qclass_name(qclass), qtype_name(qtype), name, peer_ip, ntohs(peer.sin_port));
 		switch (Q(qclass, qtype)) {
 		case Q_IN_SOA:
 			debugf("replying to IN SOA query\n");
