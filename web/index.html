@@ -66,6 +66,9 @@ a.b.c.d.e.f.g.h.i.j.k.l.<b>10.20.30.40</b>.netip.cc</pre>
 <p>To use it, just make up a name! When you need a DNS entry, use
 <b>name.$IP.netip.cc</b>.  You can also run your own netip
 resolver, on your own servers, using your own base domain.</p>
+<p>The special domain <b>me.netip.cc</b> will always resolve to
+the IP address of the remote socket as netip sees it &mdash; the
+client.  This can be helpful in troubleshooting egress networking.</p>
 <p>You can download the netip resolver:</p>
 <ul>
   <li>For <a accesskey="l" href="https://github.com/jhunt/netip.cc/releases/download/v{{NETIP_CC_VERSION}}/netip-linux-64">[L]inux 64-bit</a></li>

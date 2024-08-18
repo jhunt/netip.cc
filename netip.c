@@ -1393,6 +1393,9 @@ int main(int argc, char **argv)
 			} else if (ns_idx >= 8 && name_is(query, "ns8", tld)) {
 				rc = reply_a(&msg, ns_replies[7]);
 
+			} else if (name_is(query, "me", tld)) {
+				rc = reply_a(&msg, peer.sin_addr.s_addr);
+
 			} else if (acme.enabled && name_begins(query, "_acme-challenge", tld)) {
 				acme_save(&acme, query);
 				/* still reply magically */
